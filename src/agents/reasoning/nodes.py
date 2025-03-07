@@ -4,19 +4,54 @@ from langchain_core.messages import HumanMessage, AIMessage
 from ..prompts.state_analysis import create_state_analysis_prompt
 from ..prompts.thought_generation import create_thought_generation_prompt
 from ..prompts.action_proposal import create_action_proposal_prompt
+from ..utils.memory_utils import get_action_history, get_game_history
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
 
-def analyze_game_state(state: Dict[str, Any], model: Any, agent_id: int, memory: Dict[str, Any] = None) -> Dict[str, Any]:
+def analyze_game_state(state: Dict[str, Any], model: Any, agent_id: int, memory: Dict[str, Any] = None, *, store=None, config=None) -> Dict[str, Any]:
     """Analyze the game state to understand the current situation."""
     try:
+        # Track execution path
+        execution_path = state.get("execution_path", [])
+        execution_path.append("analyze_state")
+
         # Extract state components
         game_state = state["game_state"]
 
-        # Create the prompt
+        # Get learning history if available
+        learning_history = ""
+        if store and config:
+            try:
+                # Get the agent instance from the config if available
+                agent = config.get("agent_instance")
+                if agent:
+                    # Get action history
+                    action_history = get_action_history(agent, limit=5)
+                    if action_history:
+                        learning_history += "\nRecent Action History:\n"
+                        for action in action_history:
+                            action_type = action.get("action_type", "unknown")
+                            result = "succeeded" if action.get(
+                                "result", {}).get("success", False) else "failed"
+                            learning_history += f"- {action_type} {result}\n"
+
+                    # Get game history
+                    game_history = get_game_history(agent, limit=3)
+                    if game_history:
+                        learning_history += "\nRecent Game History:\n"
+                        for game in game_history:
+                            score = game.get("score", 0)
+                            turns = game.get("turns_played", 0)
+                            learning_history += f"- Score: {score}, Turns: {turns}\n"
+            except Exception as e:
+                logger.warning(f"Error retrieving learning history: {e}")
+
+        # Create the prompt with learning history
         prompt = create_state_analysis_prompt(game_state, agent_id, memory)
+        if learning_history:
+            prompt += f"\n\nLearning from past games and actions:{learning_history}"
 
         # Generate analysis using the LLM
         response = model.invoke([HumanMessage(content=prompt)])
@@ -30,7 +65,8 @@ def analyze_game_state(state: Dict[str, Any], model: Any, agent_id: int, memory:
             # Return updated state
             return {
                 **state,
-                "current_thoughts": current_thoughts
+                "current_thoughts": current_thoughts,
+                "execution_path": execution_path
             }
 
         return state
@@ -39,9 +75,13 @@ def analyze_game_state(state: Dict[str, Any], model: Any, agent_id: int, memory:
         return state
 
 
-def generate_thoughts(state: Dict[str, Any], model: Any, agent_id: int, memory: Dict[str, Any] = None) -> Dict[str, Any]:
+def generate_thoughts(state: Dict[str, Any], model: Any, agent_id: int, memory: Dict[str, Any] = None, *, store=None, config=None) -> Dict[str, Any]:
     """Generate thoughts about the game state."""
     try:
+        # Track execution path
+        execution_path = state.get("execution_path", [])
+        execution_path.append("generate_thoughts")
+
         # Extract state components
         game_state = state["game_state"]
         discussion_history = state["discussion_history"]
@@ -67,163 +107,138 @@ def generate_thoughts(state: Dict[str, Any], model: Any, agent_id: int, memory: 
             # Add the new thought to the list
             current_thoughts.append(cleaned_response)
 
+            # Store the thought in the memory store if available
+            if store and config:
+                try:
+                    # Get the agent instance from the config if available
+                    agent = config.get("agent_instance")
+                    if agent and hasattr(agent, "store_memory"):
+                        # Store the thought with the current turn information
+                        thought_entry = {
+                            "thought": cleaned_response,
+                            "turn": game_state.turn_count,
+                            "context": {
+                                "score": game_state.score,
+                                "clue_tokens": game_state.clue_tokens,
+                                "fuse_tokens": game_state.fuse_tokens
+                            }
+                        }
+                        agent.store_memory("thoughts", thought_entry)
+                except Exception as e:
+                    logger.warning(f"Error storing thought in memory: {e}")
+
         # Return updated state
         return {
             **state,
-            "current_thoughts": current_thoughts
+            "current_thoughts": current_thoughts,
+            "execution_path": execution_path
         }
     except Exception as e:
         logger.error(f"Error generating thoughts: {e}")
         return state
 
 
-def propose_action(state: Dict[str, Any], model: Any, agent_id: int, memory: Dict[str, Any] = None) -> Dict[str, Any]:
+def propose_action(state: Dict[str, Any], model: Any, agent_id: int, memory: Dict[str, Any] = None, *, store=None, config=None) -> Dict[str, Any]:
     """
-    Propose an action based on the game state and thoughts.
-
-    This method handles both the discussion phase and the action phase:
-    - In discussion phase: Generates thoughts about potential actions
-    - In action phase: Generates actual tool calls for execution
+    Propose an action based on the current game state and thoughts.
 
     Args:
-        state: The current state of the agent
-        model: The LLM model to use
-        agent_id: The ID of the agent
-        memory: The agent's memory dictionary
+        state: Current state of the reasoning graph
+        model: Language model to use for generating the action
+        agent_id: ID of the agent
+        memory: Memory store for the agent
 
     Returns:
-        Updated state with proposed action or thoughts
+        Updated state with the proposed action
     """
-    try:
-        # Extract state components
-        game_state = state["game_state"]
-        discussion_history = state["discussion_history"]
-        current_thoughts = state.get("current_thoughts", [])
+    # Log the state keys for debugging
+    logger.info(
+        f"Agent {agent_id}: State keys before action proposal: {list(state.keys())}")
 
-        # Determine if we're in the action phase (messages will be present)
-        is_action_phase = "messages" in state
+    # Check if we're in the action phase
+    is_action_phase = state.get("is_action_phase", False)
+    logger.info(f"Agent {agent_id}: Is action phase: {is_action_phase}")
 
-        # Create the prompt based on the phase
-        prompt = create_action_proposal_prompt(
-            game_state, discussion_history, current_thoughts, agent_id, memory)
+    # Get the current player
+    current_player = state.get("game_state", {}).current_player
+    logger.info(f"Agent {agent_id}: Current player: {current_player}")
 
-        # Generate response using the LLM with tools
-        response = model.invoke([HumanMessage(content=prompt)])
+    # Track the execution path
+    execution_path = state.get("execution_path", [])
+    execution_path.append("propose_action")
+    logger.info(f"Agent {agent_id}: Execution path: {execution_path}")
 
-        # Log if tool calls were generated
-        if hasattr(response, "tool_calls") and response.tool_calls:
-            logger.info(
-                f"Agent {agent_id} generated tool calls: {response.tool_calls}")
+    # Create a copy of the state to avoid modifying the original
+    new_state = state.copy()
 
-            # If in discussion phase but tool calls were generated, extract the content
-            # but also preserve the tool calls for later use
-            if not is_action_phase:
-                content = response.content if response.content else "I'm considering my options."
-                logger.info(
-                    f"Tool calls generated during discussion phase, using content: {content}")
-                current_thoughts.append(f"I'm considering: {content}")
+    # Set the agent_id and is_action_phase flags
+    new_state["agent_id"] = agent_id
+    new_state["is_action_phase"] = True
+    new_state["execution_path"] = execution_path
 
-                # Store the tool calls in the state for later use
-                state["proposed_tool_calls"] = response.tool_calls
+    # Add messages to the state for the action phase
+    logger.info(f"Agent {agent_id}: Adding messages to state for action phase")
 
-                # Also store in memory if available
-                if memory is not None:
-                    memory["proposed_tool_calls"] = response.tool_calls
-                    logger.info(
-                        f"Stored tool calls in memory: {response.tool_calls}")
+    # If we don't have messages, initialize them
+    if "messages" not in new_state:
+        new_state["messages"] = []
 
-                return {
-                    **state,
-                    "current_thoughts": current_thoughts,
-                    "proposed_tool_calls": response.tool_calls
-                }
+    # Extract state components for the prompt
+    game_state = state.get("game_state", {})
+    discussion_history = state.get("discussion_history", [])
+    game_history = state.get("game_history", [])
+    current_thoughts = state.get("current_thoughts", [])
 
-        # Process the response based on the phase
-        if is_action_phase:
-            messages = state.get("messages", [])
+    # Create a prompt for the action
+    from langchain_core.messages import HumanMessage
 
-            # In action phase, check if we have stored tool calls from discussion phase
-            if not (hasattr(response, "tool_calls") and response.tool_calls) and "proposed_tool_calls" in state:
-                logger.info(
-                    f"Using tool calls from discussion phase: {state['proposed_tool_calls']}")
+    # Create a prompt that includes the game state, discussion history, and current thoughts
+    prompt = f"""
+    You are playing a game of Hanabi. It's your turn to take an action.
+    
+    Game State:
+    {game_state}
+    
+    Discussion History:
+    {discussion_history}
+    
+    Your Current Thoughts:
+    {current_thoughts}
+    
+    Please take an action by using one of the following tools:
+    1. play_card - Play a card from your hand
+    2. give_clue - Give a clue to another player
+    3. discard - Discard a card from your hand
+    
+    Choose the most appropriate action based on the current game state and discussion.
+    """
 
-                # If the response doesn't have tool calls but we have stored ones,
-                # create a new response with the stored tool calls
-                from langchain_core.messages import AIMessage
-                tool_response = AIMessage(
-                    content=response.content if hasattr(
-                        response, "content") and response.content else "I'll take this action.",
-                    tool_calls=state["proposed_tool_calls"]
-                )
-                messages.append(tool_response)
+    # Add the prompt as a human message
+    human_message = HumanMessage(content=prompt)
+    new_state["messages"].append(human_message)
 
-                # Also add a tool result to make it easier for the extractor
-                state["tool_result"] = {
-                    "type": state["proposed_tool_calls"][0].get("name", ""),
-                    **state["proposed_tool_calls"][0].get("args", {})
-                }
+    # Use the model to generate the action
+    action_message = model.invoke([human_message])
 
-                # Map tool names to action types for the tool result
-                if state["tool_result"]["type"] == "play_card":
-                    state["tool_result"] = {
-                        "type": "play_card",
-                        "card_index": state["tool_result"].get("card_index", 0)
-                    }
-                elif state["tool_result"]["type"] == "give_clue":
-                    state["tool_result"] = {
-                        "type": "give_clue",
-                        "target_id": state["tool_result"].get("target_id", 0),
-                        "clue": {
-                            "type": state["tool_result"].get("clue_type", "color"),
-                            "value": state["tool_result"].get("clue_value", "")
-                        }
-                    }
-                elif state["tool_result"]["type"] == "discard":
-                    state["tool_result"] = {
-                        "type": "discard",
-                        "card_index": state["tool_result"].get("card_index", 0)
-                    }
+    # Add the action message to the state
+    new_state["messages"].append(action_message)
 
-                return {
-                    **state,
-                    "messages": messages,
-                    "tool_result": state["tool_result"]
-                }
-            else:
-                # If the response has tool calls or we don't have stored ones,
-                # just add the response to messages
-                messages.append(response)
-                return {
-                    **state,
-                    "messages": messages
-                }
-        else:
-            # In discussion phase, add the content to thoughts
-            content = response.content.strip()
-            current_thoughts.append(content)
+    # Check if the action message has tool calls
+    if hasattr(action_message, "tool_calls") and action_message.tool_calls:
+        logger.info(
+            f"Agent {agent_id}: Generated tool calls: {action_message.tool_calls}")
 
-            return {
-                **state,
-                "current_thoughts": current_thoughts
-            }
+        # Add the proposed tool calls to the state
+        new_state["proposed_tool_calls"] = action_message.tool_calls
 
-    except Exception as e:
-        logger.error(f"Error proposing action: {e}")
-        # Add error to thoughts instead of re-raising to avoid terminating the graph
-        if "messages" in state:
-            # In action phase, add error message
-            messages = state.get("messages", [])
-            messages.append(
-                AIMessage(content=f"Error proposing action: {e}"))
-            return {
-                **state,
-                "messages": messages
-            }
-        else:
-            # In discussion phase, add error to thoughts
-            current_thoughts = state.get("current_thoughts", [])
-            current_thoughts.append(f"Error proposing action: {e}")
-            return {
-                **state,
-                "current_thoughts": current_thoughts
-            }
+        # Log the state keys after adding tool calls
+        logger.info(
+            f"Agent {agent_id}: State keys after adding tool calls: {list(new_state.keys())}")
+        logger.info(
+            f"Agent {agent_id}: Tool calls added to state: {action_message.tool_calls}")
+    else:
+        # If no tool calls, just log the message content
+        logger.info(
+            f"Agent {agent_id}: No tool calls in action message. Content: {action_message.content}")
+
+    return new_state

@@ -55,44 +55,36 @@ def track_clue(turn, giver_id, receiver_id, clue_type, clue_value, affected_indi
 
 
 def log_detailed_game_state(engine):
-    """Log detailed information about player hands and clue information."""
+    """Log detailed information about the current game state."""
     logger.info("----- DETAILED GAME STATE -----")
 
     # Log firework piles
-    firework_info = []
-    for color in engine.state.firework_piles:
-        pile = engine.state.firework_piles[color]
+    firework_piles = []
+    for color, pile in engine.state.firework_piles.items():
         if pile:
             top_card = pile[-1].number
-            firework_info.append(f"{color.value}: {top_card}")
+            firework_piles.append(f"{color.value}: {top_card}")
         else:
-            firework_info.append(f"{color.value}: empty")
+            firework_piles.append(f"{color.value}: empty")
+    logger.info(f"Firework piles: {', '.join(firework_piles)}")
 
-    logger.info(f"Firework piles: {', '.join(firework_info)}")
-
-    # Log player hands with clue information
+    # Log player hands
     for player_id, hand in engine.state.hands.items():
-        # First, log the hand as the player would see it (with hidden information for their own cards)
+        # First, log how the player sees their own hand
         player_view = []
         for i, card in enumerate(hand):
-            # The player can't see their own cards
+            # For the player's own view, we hide the actual card values
             card_info = f"Card {i}: [HIDDEN]"
 
-            # But they might have clue information
-            if card.is_visible:
-                # Find clues for this card from the clue history
-                card_clues = []
-                for clue in clue_history:
-                    if clue["receiver_id"] == player_id and i in clue["affected_indices"]:
-                        if clue["clue_type"] == "color":
-                            card_clues.append(f"color: {clue['clue_value']}")
-                        else:  # number clue
-                            card_clues.append(f"number: {clue['clue_value']}")
+            # Add clue information if available
+            clues = []
+            if hasattr(card, 'color_clued') and card.color_clued:
+                clues.append(f"color: {card.color.value}")
+            if hasattr(card, 'number_clued') and card.number_clued:
+                clues.append(f"number: {card.number}")
 
-                if card_clues:
-                    card_info += f" ({', '.join(card_clues)})"
-                else:
-                    card_info += " (clued but details unknown)"
+            if clues:
+                card_info += f" ({', '.join(clues)})"
 
             player_view.append(card_info)
 
@@ -106,37 +98,13 @@ def log_detailed_game_state(engine):
             card_info = f"Card {i}: {card.color.value} {card.number}"
 
             # Add visibility information (if card has received clues)
-            if card.is_visible:
-                # Find clues for this card from the clue history
-                card_clues = []
-                for clue in clue_history:
-                    if clue["receiver_id"] == player_id and i in clue["affected_indices"]:
-                        if clue["clue_type"] == "color":
-                            card_clues.append(f"color: {clue['clue_value']}")
-                        else:  # number clue
-                            card_clues.append(f"number: {clue['clue_value']}")
-
-                if card_clues:
-                    card_info += f" (clued: {', '.join(card_clues)})"
-                else:
-                    card_info += " (clued)"
+            if hasattr(card, 'is_visible') and card.is_visible:
+                card_info += " (clued)"
 
             hand_info.append(card_info)
 
         logger.info(
             f"Player {player_id}'s actual hand (visible to others): {hand_info}")
-
-    # Log clue history for each player
-    if clue_history:
-        logger.info("----- CLUE HISTORY -----")
-        for player_id in engine.state.hands.keys():
-            player_clues = [
-                clue for clue in clue_history if clue["receiver_id"] == player_id]
-            if player_clues:
-                logger.info(f"Clues given to Player {player_id}:")
-                for clue in player_clues:
-                    logger.info(
-                        f"  Turn {clue['turn']}: Player {clue['giver_id']} gave {clue['clue_type']} {clue['clue_value']} clue, affecting cards at positions {clue['affected_indices']}")
 
     # Log discard pile summary
     discard_summary = {}
@@ -162,10 +130,68 @@ def log_detailed_game_state(engine):
     logger.info("----- END DETAILED STATE -----")
 
 
+def log_action_summary(agent_id, action, result=None):
+    """Log a summary of an agent's action and its result."""
+    action_type = action.get("type", "unknown")
+
+    if action_type == "play_card":
+        card_index = action.get("card_index", 0)
+        message = f"🎮 Player {agent_id} played card at position {card_index}"
+        if result and "card" in result:
+            card = result["card"]
+            message += f" ({card.color.value} {card.number})"
+        if result and "success" in result:
+            if result["success"]:
+                message += " ✅"
+            else:
+                message += " ❌"
+        logger.info(message)
+
+    elif action_type == "give_clue":
+        target_id = action.get("target_id", 0)
+        clue = action.get("clue", {})
+        clue_type = clue.get("type", "unknown")
+        clue_value = clue.get("value", "unknown")
+        message = f"💬 Player {agent_id} gave a {clue_type} clue ({clue_value}) to Player {target_id}"
+        if result and "affected_cards" in result:
+            message += f" affecting {len(result['affected_cards'])} cards"
+        logger.info(message)
+
+    elif action_type == "discard":
+        card_index = action.get("card_index", 0)
+        message = f"🗑️ Player {agent_id} discarded card at position {card_index}"
+        if result and "card" in result:
+            card = result["card"]
+            message += f" ({card.color.value} {card.number})"
+        logger.info(message)
+
+    else:
+        logger.info(f"Player {agent_id} performed action: {action}")
+
+
+def log_game_status(engine):
+    """Log a concise summary of the current game status."""
+    logger.info("=" * 50)
+    logger.info(
+        f"🏆 SCORE: {engine.state.score} | 🔍 CLUES: {engine.state.clue_tokens} | 💣 FUSES: {engine.state.fuse_tokens}")
+
+    # Log firework piles in a compact format
+    fireworks = []
+    for color, pile in engine.state.firework_piles.items():
+        height = len(pile)
+        fireworks.append(f"{color.value[0].upper()}{height}")
+    logger.info(f"🎆 FIREWORKS: {' '.join(fireworks)}")
+
+    # Log remaining deck size and turns
+    logger.info(
+        f"🎴 DECK: {len(engine.state.deck)} cards | 🔄 TURN: {engine.state.turn_count + 1}")
+    logger.info("=" * 50)
+
+
 def run_game():
     """Run a complete game with AI agents."""
     logger.info("=" * 50)
-    logger.info("STARTING NEW GAME OF HANABI")
+    logger.info("🎮 STARTING NEW GAME OF HANABI 🎮")
     logger.info("=" * 50)
 
     # Load environment variables
@@ -192,13 +218,8 @@ def run_game():
         logger.error(f"Error initializing game components: {e}")
         return
 
-    logger.info("Initial game state:")
-    logger.info(f"Deck size: {len(engine.state.deck)}")
-    logger.info(f"Clue tokens: {engine.state.clue_tokens}")
-    logger.info(f"Fuse tokens: {engine.state.fuse_tokens}")
-    logger.info(f"Current player: {engine.state.current_player}")
-
-    # Log detailed initial game state
+    # Log initial game status
+    log_game_status(engine)
     log_detailed_game_state(engine)
 
     # Main game loop
@@ -211,16 +232,14 @@ def run_game():
 
             logger.info("=" * 50)
             logger.info(
-                f"TURN {human_readable_turn} - PLAYER {current_player}'S TURN")
-            logger.info(
-                f"Internal turn count: {turn_info['turn_count']}, Player index: {current_player}")
+                f"🎲 TURN {human_readable_turn} - PLAYER {current_player}'S TURN 🎲")
             logger.info("=" * 50)
 
             # Log detailed game state at the start of each turn
             log_detailed_game_state(engine)
 
             # Start new discussion
-            logger.info("----- DISCUSSION PHASE BEGINS -----")
+            logger.info("📣 ----- DISCUSSION PHASE BEGINS ----- 📣")
             discussion_manager.start_new_discussion()
 
             # First, the active player proposes an action
@@ -228,22 +247,23 @@ def run_game():
             game_view = engine.state.get_view_for(current_player)
 
             logger.info(
-                f"Active Player {current_player} is proposing an action")
+                f"🎯 Active Player {current_player} is proposing an action")
             try:
-                # Get the active player's initial proposal
+                # Get the active player's initial proposal with clear action and reasoning
                 initial_proposal = current_agent.participate_in_discussion(
                     game_view,
-                    discussion_manager.get_game_history(last_n_turns=3)
+                    discussion_manager.get_game_history(last_n_turns=3),
+                    is_active_player=True  # Indicate this is the active player
                 )
                 logger.info(
-                    f"Player {current_player} proposes: {initial_proposal}")
+                    f"💡 Player {current_player} proposes: {initial_proposal}")
                 # Add the proposal to the discussion history BEFORE requesting feedback
                 discussion_manager.add_contribution(
                     current_player, initial_proposal)
             except Exception as e:
                 logger.error(
                     f"Error getting proposal from Player {current_player}: {e}")
-                initial_proposal = "I'm having trouble analyzing the game state."
+                initial_proposal = "I propose to give a number clue to help identify playable 1s because this is the safest way to make progress at this stage."
                 discussion_manager.add_contribution(
                     current_player, initial_proposal)
 
@@ -257,43 +277,82 @@ def run_game():
             if current_player == 0:
                 feedback_agents = feedback_agents[:2]
 
-            logger.info(f"Requesting feedback from agents: {feedback_agents}")
+            logger.info(
+                f"👥 Requesting feedback from agents: {feedback_agents}")
 
             # Get feedback from each selected agent
             for feedback_agent_id in feedback_agents:
-                logger.info(f"Getting feedback from Agent {feedback_agent_id}")
+                logger.info(
+                    f"🔄 Getting feedback from Agent {feedback_agent_id}")
                 feedback_agent = agents[feedback_agent_id]
                 feedback_view = engine.state.get_view_for(feedback_agent_id)
 
                 try:
+                    # Get yes/no feedback on the active player's proposal
                     feedback = feedback_agent.participate_in_discussion(
                         feedback_view,
-                        discussion_manager.get_discussion_history()
+                        discussion_manager.get_discussion_history(),
+                        is_active_player=False,  # This is a feedback agent
+                        active_player_proposal=initial_proposal  # Pass the active player's proposal
                     )
-                    logger.info(f"Agent {feedback_agent_id} says: {feedback}")
+                    logger.info(
+                        f"💬 Agent {feedback_agent_id} says: {feedback}")
                     discussion_manager.add_contribution(
                         feedback_agent_id, feedback)
                 except Exception as e:
                     logger.error(
                         f"Error getting feedback from Agent {feedback_agent_id}: {e}")
-                    feedback = "I'm having trouble analyzing the current situation."
+                    feedback = "I agree with the proposal because it helps us identify playable cards safely."
                     discussion_manager.add_contribution(
                         feedback_agent_id, feedback)
 
-            logger.info("----- DISCUSSION PHASE ENDS -----")
+            logger.info("📣 ----- DISCUSSION PHASE ENDS ----- 📣")
 
-            # Action phase
-            logger.info("----- ACTION PHASE BEGINS -----")
-            logger.info(f"Agent {current_player} is making final decision")
+            # Get the discussion summary from the pre-action phase
+            pre_action_discussion_summary = discussion_manager.get_discussion_summary()
+            logger.info(
+                f"📝 Discussion summary: {pre_action_discussion_summary}")
 
-            # The active agent makes the final decision
+            # Action phase - Direct action without additional feedback
+            logger.info("🎬 ----- ACTION PHASE BEGINS ----- 🎬")
+            logger.info(f"⚡ Agent {current_player} is executing action")
+
+            # The active agent directly executes the action
             game_view = engine.state.get_view_for(current_player)
 
             try:
+                # Pass the pre-action discussion summary to the engine's _play_turn method
+                engine.pre_action_discussion_summary = pre_action_discussion_summary
+
+                # Store the current state for comparison
+                prev_score = engine.state.score
+                prev_clue_tokens = engine.state.clue_tokens
+                prev_fuse_tokens = engine.state.fuse_tokens
+
                 # This will raise an exception if the agent fails to propose a valid action
                 engine._play_turn()
+
+                # Log the action result
+                if hasattr(engine, 'last_action') and hasattr(engine, 'last_action_result'):
+                    log_action_summary(
+                        current_player, engine.last_action, engine.last_action_result)
+
+                # Log changes in game state
+                if engine.state.score > prev_score:
+                    logger.info(f"🎉 Score increased to {engine.state.score}!")
+                if engine.state.clue_tokens != prev_clue_tokens:
+                    logger.info(
+                        f"🔍 Clue tokens changed: {prev_clue_tokens} → {engine.state.clue_tokens}")
+                if engine.state.fuse_tokens != prev_fuse_tokens:
+                    logger.info(
+                        f"💣 Fuse tokens changed: {prev_fuse_tokens} → {engine.state.fuse_tokens}")
+
                 # If we get here, the action was successful
-                logger.info("----- ACTION PHASE ENDS -----")
+                logger.info("🎬 ----- ACTION PHASE ENDS ----- 🎬")
+
+                # Log the updated game status
+                log_game_status(engine)
+
             except Exception as e:
                 # The exception will be caught by the outer try-except block
                 logger.critical(f"Error during action phase: {e}")
@@ -301,11 +360,11 @@ def run_game():
 
             # Check game over conditions
             if engine.state.fuse_tokens <= 0:
-                logger.info("Game Over! Ran out of fuse tokens!")
+                logger.info("💥 Game Over! Ran out of fuse tokens!")
                 break
 
             if engine.state.get_completed_fireworks_count() == 5:
-                logger.info("Game Over! All fireworks completed!")
+                logger.info("🎆 Game Over! All fireworks completed!")
                 break
     except Exception as e:
         logger.critical(f"Game terminated due to critical error: {e}")
@@ -334,6 +393,32 @@ def run_game():
     for entry in engine.state.score_history:
         logger.info(
             f"{entry.timestamp}: {entry.action_type} - {entry.details}")
+
+    # Store game outcomes in agent memory
+    try:
+        # Import here to avoid circular imports
+        # No need to re-import sys or os as they're already imported at the top of the file
+
+        # Add the project root to the path if needed
+        project_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), ".."))
+        if project_root not in sys.path:
+            sys.path.append(project_root)
+
+        from src.agents.utils.memory_utils import store_game_outcome, generate_learning_summary
+
+        logger.info("\nStoring game outcomes in agent memory...")
+        for agent in agents:
+            store_game_outcome(agent, engine.state)
+
+        # Generate and log learning summaries for each agent
+        logger.info("\nAgent Learning Summaries:")
+        for agent in agents:
+            learning_summary = generate_learning_summary(agent)
+            logger.info(
+                f"\nAgent {agent.agent_id} Learning Summary:\n{learning_summary}")
+    except Exception as e:
+        logger.error(f"Error storing game outcomes: {e}")
 
 
 if __name__ == "__main__":

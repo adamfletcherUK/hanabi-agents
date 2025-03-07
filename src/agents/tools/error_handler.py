@@ -26,19 +26,50 @@ def handle_tool_error(state: Dict[str, Any], agent_id: int) -> Dict[str, Any]:
     # Log the error
     logger.error(f"Agent {agent_id} tool execution error: {error}")
 
+    # Create a copy of the state to avoid modifying the original
+    updated_state = state.copy()
+
+    # Store the error for reference
+    updated_state["tool_error"] = str(error)
+
+    # Track execution path
+    execution_path = updated_state.get("execution_path", [])
+    execution_path.append("tool_error_handler")
+    updated_state["execution_path"] = execution_path
+
     # Check if we're in the action phase (messages will be present)
-    if "messages" not in state or not state["messages"]:
+    if "messages" not in updated_state or not updated_state["messages"]:
         logger.warning(
             "Tool error occurred outside action phase or with no messages")
-        return state
+
+        # Initialize messages if they don't exist
+        if "messages" not in updated_state:
+            updated_state["messages"] = []
+
+        # Add a generic error message
+        from langchain_core.messages import HumanMessage
+        updated_state["messages"].append(
+            HumanMessage(
+                content=f"Error occurred during tool execution: {error}. Please try a different approach.")
+        )
+
+        return updated_state
 
     # Get the last message which should contain tool calls
-    last_message = state["messages"][-1]
+    last_message = updated_state["messages"][-1]
 
     if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
         logger.warning(
             "Tool error occurred but no tool calls found in the last message")
-        return state
+
+        # Add a generic error message
+        from langchain_core.messages import AIMessage
+        updated_state["messages"].append(
+            AIMessage(
+                content=f"Error occurred during tool execution: {error}. Please try a different approach.")
+        )
+
+        return updated_state
 
     # Create error messages for each tool call
     tool_calls = last_message.tool_calls
@@ -56,9 +87,7 @@ def handle_tool_error(state: Dict[str, Any], agent_id: int) -> Dict[str, Any]:
         )
         error_messages.append(error_message)
 
-    # Return updated state with error messages
-    return {
-        **state,
-        "messages": state["messages"] + error_messages,
-        "tool_error": str(error)  # Store the error for reference
-    }
+    # Add error messages to the state
+    updated_state["messages"] = updated_state["messages"] + error_messages
+
+    return updated_state

@@ -18,12 +18,14 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    "langchain",
+    "langchain-openai",
     "langgraph",
     "pydantic",
-    "rich",  # For better terminal output
-    "langchain-openai",
-    "openai",
     "python-dotenv",
+    "rich",
+    "typing-extensions",
+    "openai",
     "pytest",
 ]
 

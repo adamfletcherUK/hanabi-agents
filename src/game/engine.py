@@ -1,5 +1,6 @@
 import random
 import logging
+import os
 from typing import List, Dict, Any
 from .state import GameState, Card, Color
 from ..agents.base import Agent
@@ -16,6 +17,9 @@ class GameEngine:
         self.state = self._initialize_game()
         self.discussion_manager = DiscussionManager()
         self._setup_logging()
+        # Track the last action and its result
+        self.last_action = None
+        self.last_action_result = None
         logger.info("Game engine initialized successfully")
 
     def _setup_logging(self):
@@ -94,15 +98,25 @@ class GameEngine:
         self.logger.info(
             f"Turn {self.state.turn_count + 1}: Agent {active_agent_id}'s turn")
 
-        # Conduct discussion
-        discussion_summary = self.discussion_manager.conduct_discussion(
-            self.agents, self.state, active_agent_id)
+        # Check if we have a pre-action discussion summary
+        if hasattr(self, 'pre_action_discussion_summary'):
+            # Use the pre-action discussion summary
+            discussion_summary = self.pre_action_discussion_summary
+            self.logger.info("Using pre-action discussion summary")
+            # Clear the pre-action discussion summary for the next turn
+            delattr(self, 'pre_action_discussion_summary')
+        else:
+            # Conduct discussion
+            discussion_summary = self.discussion_manager.conduct_discussion(
+                self.agents, self.state, active_agent_id)
 
         # Get action from active agent
         agent_view = self.state.get_view_for(active_agent_id)
         try:
             action = active_agent.decide_action(agent_view, discussion_summary)
             self.logger.info(f"Agent {active_agent_id} chose action: {action}")
+            # Store the action for reference
+            self.last_action = action
         except Exception as e:
             self.logger.critical(
                 f"CRITICAL ERROR: Agent {active_agent_id} failed to propose a valid action: {e}")
@@ -129,6 +143,9 @@ class GameEngine:
 
         # Validate the action
         try:
+            # Initialize error_message outside the if block
+            error_message = None
+
             if not self.state.is_valid_move(agent_id, action["type"], **action):
                 # Enhanced error logging to explain why the action is invalid
                 action_type = action["type"]
@@ -139,204 +156,238 @@ class GameEngine:
                     clue = action.get("clue", {})
                     clue_type = clue.get("type")
                     clue_value = clue.get("value")
+                    error_message += f" - Clue: {clue_type}={clue_value} to Player {target_id}"
 
+                    # Check specific clue errors
                     if self.state.clue_tokens <= 0:
-                        error_message = f"Invalid clue action: No clue tokens available"
+                        error_message += " (No clue tokens available)"
                     elif target_id == agent_id:
-                        error_message = f"Invalid clue action: Cannot give clue to yourself"
-                    elif target_id not in self.state.hands:
-                        error_message = f"Invalid clue action: Target player {target_id} does not exist"
-                    elif not clue or not isinstance(clue, dict):
-                        error_message = f"Invalid clue action: Malformed clue format"
-                    elif not clue_type or not clue_value:
-                        error_message = f"Invalid clue action: Missing clue type or value"
-                    elif clue_type not in ["color", "number"]:
-                        error_message = f"Invalid clue action: Invalid clue type '{clue_type}'"
-                    elif clue_type == "color" and clue_value not in [c.value for c in Color]:
-                        error_message = f"Invalid clue action: Invalid color value '{clue_value}'"
-                    elif clue_type == "number":
-                        try:
-                            # Convert value to int if it's a string for comparison
-                            clue_value_int = int(clue_value) if isinstance(
-                                clue_value, str) else clue_value
-                            if not (1 <= clue_value_int <= 5):
-                                error_message = f"Invalid clue action: Invalid number value '{clue_value}'"
-                        except (ValueError, TypeError):
-                            error_message = f"Invalid clue action: Invalid number value '{clue_value}'"
+                        error_message += " (Cannot give clue to yourself)"
+                    elif not self._validate_clue(clue):
+                        error_message += " (Invalid clue format)"
                     else:
-                        # Check if the clue matches any cards in target's hand
-                        target_hand = self.state.hands[target_id]
-                        matches = [i for i, card in enumerate(target_hand)
-                                   if self._card_matches_clue(card, clue)]
-                        if not matches:
-                            error_message = f"Invalid clue action: No {clue_type} {clue_value} cards in player {target_id}'s hand"
+                        # Check if the clue would affect any cards
+                        affected_cards = []
+                        for i, card in enumerate(self.state.hands[target_id]):
+                            if self._card_matches_clue(card, clue):
+                                affected_cards.append(i)
+
+                        if not affected_cards:
+                            error_message += " (Clue would not affect any cards)"
 
                 elif action_type == "play_card":
                     card_index = action.get("card_index")
-                    if card_index is None or not isinstance(card_index, int):
-                        error_message = f"Invalid play action: Invalid card index format"
-                    elif not (0 <= card_index < len(self.state.hands[agent_id])):
-                        error_message = f"Invalid play action: Card index {card_index} out of range"
-                    else:
-                        card = self.state.hands[agent_id][card_index]
-                        if self.state.completed_fireworks[card.color]:
-                            error_message = f"Invalid play action: Firework for {card.color} is already complete"
-                        else:
-                            firework_pile = self.state.firework_piles[card.color]
-                            next_number = len(firework_pile) + 1
-                            error_message = f"Invalid play action: Card {card.color} {card.number} cannot be played. Next needed card is {card.color} {next_number}"
+                    error_message += f" - Card index: {card_index}"
+
+                    # Check specific play errors
+                    if card_index is None or card_index < 0 or card_index >= len(self.state.hands[agent_id]):
+                        error_message += f" (Invalid card index, hand size: {len(self.state.hands[agent_id])})"
 
                 elif action_type == "discard":
                     card_index = action.get("card_index")
-                    if self.state.clue_tokens >= 8:
-                        error_message = f"Invalid discard action: Clue tokens already at maximum (8)"
-                    elif card_index is None or not isinstance(card_index, int):
-                        error_message = f"Invalid discard action: Invalid card index format"
-                    elif not (0 <= card_index < len(self.state.hands[agent_id])):
-                        error_message = f"Invalid discard action: Card index {card_index} out of range"
-                else:
-                    error_message = f"Invalid action: Unknown action type '{action_type}'"
+                    error_message += f" - Card index: {card_index}"
 
-            logger.error(error_message)
-            # Instead of returning False, raise an exception
-            raise ValueError(error_message)
+                    # Check specific discard errors
+                    if self.state.clue_tokens >= self.state.max_clue_tokens:
+                        error_message += " (Cannot discard when clue tokens are at maximum)"
+                    elif card_index is None or card_index < 0 or card_index >= len(self.state.hands[agent_id]):
+                        error_message += f" (Invalid card index, hand size: {len(self.state.hands[agent_id])})"
 
-            # Execute the action
+                logger.error(error_message)
+                return False
+
+            # Execute the action based on its type
             action_type = action["type"]
-            logger.debug(f"Processing {action_type} action")
+            result = None
 
             if action_type == "play_card":
-                success = self._execute_play_card(
-                    agent_id, action["card_index"])
+                card_index = action["card_index"]
+                result = self._execute_play_card(agent_id, card_index)
             elif action_type == "give_clue":
-                success = self._execute_give_clue(
-                    agent_id, action["target_id"], action["clue"])
+                target_id = action["target_id"]
+                clue = action["clue"]
+                result = self._execute_give_clue(agent_id, target_id, clue)
             elif action_type == "discard":
-                success = self._execute_discard(agent_id, action["card_index"])
+                card_index = action["card_index"]
+                result = self._execute_discard(agent_id, card_index)
             else:
                 logger.error(f"Unknown action type: {action_type}")
-                raise ValueError(f"Unknown action type: {action_type}")
+                return False
 
-            if success:
-                logger.info(f"Action executed successfully: {action}")
-                # Update current player and turn count
-                old_player = self.state.current_player
-                old_turn = self.state.turn_count
-                self.state.current_player = (
-                    self.state.current_player + 1) % len(self.agents)
-                self.state.turn_count += 1
-                logger.debug(
-                    f"Player advanced: {old_player} -> {self.state.current_player}, Turn count: {old_turn} -> {self.state.turn_count}")
-            else:
-                logger.warning(f"Action execution failed: {action}")
-            # Instead of returning False, raise an exception
-            raise ValueError(f"Action execution failed: {action}")
+            # Store the action result
+            self.last_action_result = result
 
-            return success
-        except Exception as e:
-            logger.critical(f"CRITICAL ERROR: Action execution failed: {e}")
-            logger.critical("Game terminated due to critical error")
-            self.state.game_over = True
-            raise RuntimeError(f"Game terminated due to critical error: {e}")
+            # Advance to the next player
+            self.state.current_player = (
+                self.state.current_player + 1) % len(self.agents)
+            self.state.turn_count += 1
+            logger.debug(
+                f"Player advanced: {agent_id} -> {self.state.current_player}, Turn count: {self.state.turn_count - 1} -> {self.state.turn_count}")
 
-    def _execute_play_card(self, agent_id: int, card_index: int) -> bool:
-        """Execute playing a card."""
-        logger.debug(
-            f"Playing card at index {card_index} for agent {agent_id}")
-        card = self.state.hands[agent_id][card_index]
-        color = card.color
-        number = card.number
-
-        # Check if the play is valid (next card in sequence)
-        firework_pile = self.state.firework_piles[color]
-        next_number = len(firework_pile) + 1
-
-        if number == next_number:
-            # Successful play
-            self.state.firework_piles[color].append(card)
-
-            # Update score
-            self.state.update_score(
-                1, "play_card", f"Successfully played {color} {number}")
-
-            # Check if firework is complete
-            if self.state.check_firework_completion(color):
-                self.logger.info(f"Firework {color} completed!")
-                self.state.update_score(
-                    1, "complete_firework", f"Completed {color} firework")
-                self.logger.info(
-                    f"Current score: {self.state.score} ({self.state.get_score_percentage():.1f}%)")
-
-            # Remove card from hand and draw new card if available
-            self.state.hands[agent_id].pop(card_index)
-            if self.state.deck:
-                new_card = self.state.deck.pop()
-                self.state.hands[agent_id].append(new_card)
-                self.logger.debug(
-                    f"Drew new card: {new_card.color} {new_card.number}")
             return True
-        else:
-            # Failed play
-            self.state.discard_pile.append(card)
-            self.state.fuse_tokens -= 1
-
-            self.logger.warning(
-                f"Failed play: {color} {number}. Fuse tokens: {self.state.fuse_tokens}")
-
-            # Remove card from hand and draw new card if available
-            self.state.hands[agent_id].pop(card_index)
-            if self.state.deck:
-                new_card = self.state.deck.pop()
-                self.state.hands[agent_id].append(new_card)
-                self.logger.debug(
-                    f"Drew new card: {new_card.color} {new_card.number}")
+        except Exception as e:
+            logger.error(f"Error executing action: {e}")
             return False
 
+    def _execute_play_card(self, agent_id: int, card_index: int) -> bool:
+        """Execute a play card action."""
+        logger.debug(f"Processing play_card action")
+
+        # Get the card from the player's hand
+        hand = self.state.hands[agent_id]
+        card = hand[card_index]
+
+        # Check if the card can be played on the firework pile
+        color = card.color
+        number = card.number
+        pile = self.state.firework_piles[color]
+
+        # Determine if the play is successful
+        success = False
+        if not pile and number == 1:
+            # Starting a new pile with a 1
+            success = True
+        elif pile and pile[-1].number == number - 1:
+            # Adding to an existing pile with the next number
+            success = True
+
+        # Process the play
+        if success:
+            logger.info(
+                f"Agent {agent_id} successfully played {color.value} {number}")
+
+            # Add the card to the firework pile
+            self.state.firework_piles[color].append(card)
+
+            # Check if we completed a firework (reached 5)
+            if number == 5:
+                logger.info(f"Completed the {color.value} firework!")
+                # Award a clue token if not already at max
+                if self.state.clue_tokens < self.state.max_clue_tokens:
+                    self.state.clue_tokens += 1
+                    logger.info(
+                        f"Awarded a clue token for completing a firework. Now at {self.state.clue_tokens}")
+
+            # Update the score
+            self.state.score = sum(len(pile)
+                                   for pile in self.state.firework_piles.values())
+
+            # Add to score history
+            self.state.add_score_event(
+                "play_card", f"Agent {agent_id} played {color.value} {number}")
+        else:
+            logger.info(
+                f"Agent {agent_id} failed to play {color.value} {number}")
+
+            # Failed play - add to discard pile and lose a fuse token
+            self.state.discard_pile.append(card)
+            self.state.fuse_tokens -= 1
+            logger.warning(
+                f"Lost a fuse token. Now at {self.state.fuse_tokens}")
+
+            # Check if we're out of fuse tokens
+            if self.state.fuse_tokens <= 0:
+                logger.critical("Out of fuse tokens! Game over.")
+                self.state.game_over = True
+
+        # Remove the card from the player's hand
+        hand.pop(card_index)
+
+        # Draw a new card if there are cards left in the deck
+        if self.state.deck:
+            new_card = self.state.deck.pop(0)
+            hand.append(new_card)
+            logger.debug(
+                f"Agent {agent_id} drew a new card: {new_card.color.value} {new_card.number}")
+        else:
+            logger.info(
+                f"No cards left in the deck for Agent {agent_id} to draw")
+
+        # Return the result
+        return {
+            "success": success,
+            "card": card,
+            "score": self.state.score,
+            "fuse_tokens": self.state.fuse_tokens
+        }
+
     def _execute_give_clue(self, agent_id: int, target_id: int, clue: Dict[str, Any]) -> bool:
-        """Execute giving a clue."""
+        """Execute a give clue action."""
+        logger.debug(f"Processing give_clue action")
         logger.debug(f"Giving clue to agent {target_id}: {clue}")
+
+        # Spend a clue token
         self.state.clue_tokens -= 1
         logger.debug(f"Remaining clue tokens: {self.state.clue_tokens}")
 
-        # Validate clue format
-        if not self._validate_clue(clue):
-            self.logger.error(f"Invalid clue format from Agent {agent_id}")
-            return False
-
-        # Update target player's card visibility based on clue
-        for card in self.state.hands[target_id]:
+        # Apply the clue to the target player's hand
+        affected_cards = []
+        for i, card in enumerate(self.state.hands[target_id]):
             if self._card_matches_clue(card, clue):
+                affected_cards.append(i)
                 card.is_visible = True
 
-        self.logger.info(
-            f"Agent {agent_id} gave clue to Agent {target_id}: {clue}")
-        return True
+                # Mark the specific clue type
+                if clue["type"] == "color":
+                    card.color_clued = True
+                elif clue["type"] == "number":
+                    card.number_clued = True
+
+        # Log the clue
+        clue_type = clue["type"]
+        clue_value = clue["value"]
+        logger.info(
+            f"Agent {agent_id} gave clue to Agent {target_id}: {clue_type}={clue_value}, affecting positions {affected_cards}")
+
+        # Track the clue in game history
+        self.state.add_clue_event(
+            agent_id, target_id, clue_type, clue_value, affected_cards)
+
+        # Return the result
+        return {
+            "success": True,
+            "affected_cards": affected_cards,
+            "clue_tokens": self.state.clue_tokens
+        }
 
     def _execute_discard(self, agent_id: int, card_index: int) -> bool:
-        """Execute discarding a card."""
-        logger.debug(
-            f"Discarding card at index {card_index} for agent {agent_id}")
-        card = self.state.hands[agent_id][card_index]
+        """Execute a discard action."""
+        logger.debug(f"Processing discard action")
 
-        # Add card to discard pile
+        # Get the card from the player's hand
+        hand = self.state.hands[agent_id]
+        card = hand[card_index]
+
+        # Add the card to the discard pile
         self.state.discard_pile.append(card)
+        logger.info(
+            f"Agent {agent_id} discarded {card.color.value} {card.number}")
 
-        # Remove card from hand
-        self.state.hands[agent_id].pop(card_index)
+        # Gain a clue token
+        self.state.clue_tokens += 1
+        if self.state.clue_tokens > self.state.max_clue_tokens:
+            self.state.clue_tokens = self.state.max_clue_tokens
+        logger.debug(f"Gained a clue token. Now at {self.state.clue_tokens}")
 
-        # Recover clue token
-        self.state.clue_tokens = min(self.state.clue_tokens + 1, 8)
+        # Remove the card from the player's hand
+        hand.pop(card_index)
 
-        # Draw new card if available
+        # Draw a new card if there are cards left in the deck
         if self.state.deck:
-            new_card = self.state.deck.pop()
-            self.state.hands[agent_id].append(new_card)
-            self.logger.debug(
-                f"Drew new card: {new_card.color} {new_card.number}")
+            new_card = self.state.deck.pop(0)
+            hand.append(new_card)
+            logger.debug(
+                f"Agent {agent_id} drew a new card: {new_card.color.value} {new_card.number}")
+        else:
+            logger.info(
+                f"No cards left in the deck for Agent {agent_id} to draw")
 
-        self.logger.info(
-            f"Agent {agent_id} discarded {card.color} {card.number}")
-        return True
+        # Return the result
+        return {
+            "success": True,
+            "card": card,
+            "clue_tokens": self.state.clue_tokens
+        }
 
     def _validate_clue(self, clue: Dict[str, Any]) -> bool:
         """Validate the format and content of a clue."""

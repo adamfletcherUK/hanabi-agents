@@ -20,6 +20,8 @@ class Card(BaseModel):
     color: Color
     number: int = Field(ge=1, le=5)
     is_visible: bool = False
+    color_clued: bool = False
+    number_clued: bool = False
 
 
 class ScoreHistory(BaseModel):

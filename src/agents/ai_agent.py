@@ -16,8 +16,9 @@ from langchain_core.runnables import RunnableLambda
 from .state.state_factory import create_initial_state, create_action_state
 from .utils.discussion import process_discussion_history
 from .reasoning.graph import setup_reasoning_graph
-from .discussion.contribution import generate_contribution
+from .discussion.contribution import generate_contribution, generate_active_player_contribution, generate_feedback_contribution
 from .actions.extractor import extract_action_from_state
+import uuid
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -74,6 +75,9 @@ class AIAgent(Agent):
         # Initialize environment and API key
         self._initialize_environment()
 
+        # Initialize memory store
+        self.memory_store = self._initialize_memory_store()
+
         # Initialize the model
         self.model = self._initialize_model(model_name)
 
@@ -94,6 +98,19 @@ class AIAgent(Agent):
             logger.error("OPENAI_API_KEY not found in environment variables")
             raise ValueError(
                 "OPENAI_API_KEY not found. Please set it in your .env file or environment.")
+
+    def _initialize_memory_store(self):
+        """Initialize the memory store for the agent."""
+        from langgraph.store.memory import InMemoryStore
+
+        try:
+            # Create an in-memory store for the agent
+            memory_store = InMemoryStore()
+            logger.info(f"Memory store initialized for Agent {self.agent_id}")
+            return memory_store
+        except Exception as e:
+            logger.error(f"Error initializing memory store: {e}")
+            return None
 
     def _initialize_model(self, model_name):
         """Create and configure the LLM model."""
@@ -181,59 +198,278 @@ class AIAgent(Agent):
             logger.error(f"Error initializing AI Agent {self.agent_id}: {e}")
             raise
 
-    def participate_in_discussion(self, game_state: GameState, discussion_history: list) -> str:
-        """Participate in the discussion phase by generating a contribution."""
-        try:
-            # Store the game state for tool access
-            self.current_game_state = game_state
+    def participate_in_discussion(self, game_state: GameState, discussion_history: list, is_active_player: bool = False, active_player_proposal: str = None) -> str:
+        """
+        Participate in the pre-action discussion phase.
 
-            # Process discussion history
-            discussion_strings, game_history_strings = process_discussion_history(
-                discussion_history, self.memory)
+        Args:
+            game_state: Current game state
+            discussion_history: History of the discussion
+            is_active_player: Whether this agent is the active player
+            active_player_proposal: The proposal from the active player (only used for feedback)
 
-            # Create initial state
-            initial_state = create_initial_state(
-                game_state, discussion_strings, game_history_strings)
-
-            # Run the reasoning graph
-            final_state = self.reasoning_graph.invoke(initial_state)
-
-            # Check if there are proposed tool calls in the final state and store them in memory
-            if "proposed_tool_calls" in final_state:
-                self.memory["proposed_tool_calls"] = final_state["proposed_tool_calls"]
-                logger.info(
-                    f"Agent {self.agent_id} stored tool calls in memory from discussion phase: {final_state['proposed_tool_calls']}")
-
-            # Generate contribution based on thoughts
-            return generate_contribution(final_state, self.model, self.agent_id)
-
-        except Exception as e:
-            logger.error(f"Error in Agent {self.agent_id} discussion: {e}")
-            return "I'm having trouble analyzing the game state."
-
-    def decide_action(self, game_state: GameState, discussion_history: list) -> Dict[str, Any]:
-        """Decide on an action based on the game state and discussion summary."""
-        # Store the game state for tool access
+        Returns:
+            Contribution string
+        """
+        # Store the current game state for tool access
         self.current_game_state = game_state
 
+        # Create initial state for the reasoning graph
+        initial_state = create_initial_state(game_state, discussion_history)
+
+        # Make sure we're not in action phase for discussion
+        initial_state["is_action_phase"] = False
+
+        # Create a thread-specific config for checkpointing
+        config = {
+            "configurable": {
+                "thread_id": f"agent_{self.agent_id}_discussion",
+                "agent_id": self.agent_id
+            },
+            "agent_instance": self  # Pass the agent instance for memory access
+        }
+
         try:
-            # Process discussion history
-            discussion_strings, game_history_strings = process_discussion_history(
-                discussion_history, self.memory)
+            # Run the reasoning graph with checkpointing
+            final_state = self.reasoning_graph.invoke(initial_state, config)
 
-            # Create initial state with messages for action phase
-            initial_state = create_action_state(
-                game_state, discussion_strings, game_history_strings, self.memory)
+            # Generate a contribution based on the final state and agent role
+            if is_active_player:
+                # Active player proposes an action with clear reasoning
+                contribution = generate_active_player_contribution(
+                    final_state, self.model, self.agent_id)
+            else:
+                # Feedback agent provides yes/no feedback on the active player's proposal
+                if active_player_proposal:
+                    contribution = generate_feedback_contribution(
+                        final_state, self.model, self.agent_id, active_player_proposal)
+                else:
+                    # Fallback to regular contribution if no active player proposal is provided
+                    contribution = generate_contribution(
+                        final_state, self.model, self.agent_id)
 
-            # Run the reasoning graph
-            final_state = self.reasoning_graph.invoke(initial_state)
+            # Store the proposed tool calls for later use
+            if "proposed_tool_calls" in final_state:
+                # Convert tool calls to a serializable format if needed
+                tool_calls = final_state["proposed_tool_calls"]
+                if tool_calls and isinstance(tool_calls, list):
+                    serializable_tool_calls = []
+                    for tool_call in tool_calls:
+                        if isinstance(tool_call, dict):
+                            # Make a copy to avoid modifying the original
+                            serializable_tool_call = tool_call.copy()
+                            # Convert any non-serializable values
+                            if "args" in serializable_tool_call and isinstance(serializable_tool_call["args"], dict):
+                                serializable_tool_call["args"] = dict(
+                                    serializable_tool_call["args"])
+                            serializable_tool_calls.append(
+                                serializable_tool_call)
+                        else:
+                            # If it's not a dict, try to convert it to one
+                            try:
+                                serializable_tool_call = {
+                                    "name": getattr(tool_call, "name", "unknown"),
+                                    "args": dict(getattr(tool_call, "args", {})),
+                                    "id": getattr(tool_call, "id", "unknown")
+                                }
+                                serializable_tool_calls.append(
+                                    serializable_tool_call)
+                            except Exception as e:
+                                logger.warning(
+                                    f"Could not convert tool call to serializable format: {e}")
 
-            # Extract action from final state
-            return extract_action_from_state(final_state, self.agent_id)
+                    self.update_memory("proposed_tool_calls",
+                                       serializable_tool_calls)
+                    logger.info(
+                        f"Stored serialized tool calls in memory: {serializable_tool_calls}")
 
+            return contribution
         except Exception as e:
-            logger.critical(f"Agent {self.agent_id} failed with error: {e}")
-            raise
+            logger.error(
+                f"Error in discussion phase for Agent {self.agent_id}: {e}")
+            # Generate a simple contribution without using the graph
+            if is_active_player:
+                return "I propose to give a number clue to help identify playable 1s because this is the safest way to make progress at this stage."
+            else:
+                return "I agree with the proposal because it helps us identify playable cards safely."
+
+    def decide_action(self, game_state: GameState, discussion_summary: str) -> Dict[str, Any]:
+        """Decide on an action based on the game state and discussion summary."""
+        # Store the current game state for tool access
+        self.current_game_state = game_state
+
+        # First, check if we have proposed tool calls from the discussion phase
+        proposed_tool_calls = self.get_memory_from_store("proposed_tool_calls")
+        if proposed_tool_calls:
+            logger.info(
+                f"Agent {self.agent_id}: Using proposed tool calls from discussion phase: {proposed_tool_calls}")
+
+            # Extract the first tool call
+            tool_call = proposed_tool_calls[0]
+            tool_name = tool_call.get("name", "")
+            tool_args = tool_call.get("args", {})
+
+            # Map tool names to action types
+            if tool_name == "play_card":
+                action = {
+                    "type": "play_card",
+                    "card_index": tool_args.get("card_index", 0)
+                }
+                logger.info(
+                    f"Agent {self.agent_id}: Extracted play_card action from discussion: {action}")
+                return action
+            elif tool_name == "give_clue":
+                action = {
+                    "type": "give_clue",
+                    "target_id": tool_args.get("target_id", 0),
+                    "clue": {
+                        "type": tool_args.get("clue_type", "color"),
+                        "value": tool_args.get("clue_value", "")
+                    }
+                }
+                logger.info(
+                    f"Agent {self.agent_id}: Extracted give_clue action from discussion: {action}")
+                return action
+            elif tool_name == "discard":
+                action = {
+                    "type": "discard",
+                    "card_index": tool_args.get("card_index", 0)
+                }
+                logger.info(
+                    f"Agent {self.agent_id}: Extracted discard action from discussion: {action}")
+                return action
+
+        # If no proposed tool calls or extraction failed, fall back to the reasoning graph
+        logger.info(
+            f"Agent {self.agent_id}: No valid tool calls from discussion, using reasoning graph")
+
+        # Create initial state for the reasoning graph
+        initial_state = create_action_state(
+            game_state, discussion_summary, self.memory)
+
+        # Explicitly set the action phase flag
+        initial_state["is_action_phase"] = True
+
+        # Create a thread-specific config for checkpointing
+        config = {
+            "configurable": {
+                "thread_id": f"agent_{self.agent_id}_action",
+                "agent_id": self.agent_id
+            },
+            "agent_instance": self  # Pass the agent instance for memory access
+        }
+
+        try:
+            # Log the initial state for debugging
+            logger.info(
+                f"Agent {self.agent_id}: Initial state keys: {list(initial_state.keys())}")
+
+            # Run the reasoning graph with checkpointing
+            final_state = self.reasoning_graph.invoke(initial_state, config)
+
+            # Log the final state for debugging
+            logger.info(
+                f"Agent {self.agent_id}: Final state keys: {list(final_state.keys())}")
+
+            # Extract the action from the final state
+            action = extract_action_from_state(final_state, self.agent_id)
+
+            # Store the action in memory
+            self.update_memory("last_action", action)
+
+            return action
+        except Exception as e:
+            logger.error(f"Error deciding action: {e}")
+            # Create a fallback action
+            fallback_action = self._create_fallback_action(game_state)
+            logger.warning(
+                f"Using fallback action due to error: {fallback_action}")
+            return fallback_action
+
+    def get_reasoning_history(self, phase="action", limit=5):
+        """Retrieve the agent's reasoning history from checkpoints."""
+        thread_id = f"agent_{self.agent_id}_{phase}"
+        config = {"configurable": {"thread_id": thread_id}}
+
+        try:
+            # Get the state history from the checkpointer
+            history = list(self.reasoning_graph.get_state_history(config))
+
+            # Limit the number of entries if needed
+            if limit and len(history) > limit:
+                history = history[:limit]
+
+            return history
+        except Exception as e:
+            logger.error(
+                f"Error retrieving reasoning history for Agent {self.agent_id}: {e}")
+            return []
+
+    def get_memory_from_store(self, key, query=None):
+        """Retrieve information from the memory store."""
+        try:
+            # Check if we have a memory store
+            if not hasattr(self, 'memory_store'):
+                logger.warning(
+                    f"No memory store available for Agent {self.agent_id}")
+                return []
+
+            # Use the memory store directly
+            store = self.memory_store
+
+            # Define the namespace for this agent
+            namespace = (f"agent_{self.agent_id}", key)
+
+            if query:
+                # Perform a semantic search if a query is provided
+                try:
+                    results = store.search(namespace, query=query, limit=5)
+                    return [item.value for item in results]
+                except AttributeError:
+                    # If search is not available, fall back to list
+                    logger.warning(
+                        "Search not available in store, falling back to list")
+                    items = store.list(namespace)
+                    return [item.value for item in items]
+            else:
+                # List all items in the namespace
+                items = store.list(namespace)
+                return [item.value for item in items]
+        except Exception as e:
+            logger.error(
+                f"Error retrieving from memory store for Agent {self.agent_id}: {e}")
+            return []
+
+    def store_memory(self, key, value, index=True):
+        """Store information in the memory store."""
+        try:
+            # Check if we have a memory store
+            if not hasattr(self, 'memory_store'):
+                logger.warning(
+                    f"No memory store available for Agent {self.agent_id}")
+                return
+
+            # Use the memory store directly
+            store = self.memory_store
+
+            # Define the namespace for this agent
+            namespace = (f"agent_{self.agent_id}", key)
+
+            # Generate a unique ID for this memory
+            memory_id = str(uuid.uuid4())
+
+            # Store the memory
+            try:
+                store.put(namespace, memory_id, value, index=index)
+            except TypeError:
+                # If index parameter is not supported
+                store.put(namespace, memory_id, value)
+
+            return True
+        except Exception as e:
+            logger.error(
+                f"Error storing in memory store for Agent {self.agent_id}: {e}")
+            return False
 
     # Tool functions for Hanabi actions
     def _play_card_tool(self, card_index: int) -> Dict[str, Any]:
@@ -687,3 +923,34 @@ class AIAgent(Agent):
                     **state,
                     "current_thoughts": current_thoughts
                 }
+
+    def _create_fallback_action(self, game_state: GameState) -> Dict[str, Any]:
+        """
+        Create a fallback action when the normal action selection fails.
+
+        Args:
+            game_state: Current game state
+
+        Returns:
+            A fallback action
+        """
+        logger.info(f"Agent {self.agent_id}: Creating fallback action")
+
+        # Check if we have clue tokens available
+        if game_state.clue_tokens > 0:
+            # Give a clue to the next player about 1s (usually safe)
+            next_player_id = (self.agent_id + 1) % len(game_state.hands)
+            return {
+                "type": "give_clue",
+                "target_id": next_player_id,
+                "clue": {
+                    "type": "number",
+                    "value": "1"  # Clue about 1s is usually safe
+                }
+            }
+        else:
+            # If no clue tokens, discard the first card
+            return {
+                "type": "discard",
+                "card_index": 0
+            }
