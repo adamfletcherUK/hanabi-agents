@@ -128,102 +128,116 @@ class GameEngine:
             f"Before action - Current player: {self.state.current_player}, Turn count: {self.state.turn_count}")
 
         # Validate the action
-        if not self.state.is_valid_move(agent_id, action["type"], **action):
-            # Enhanced error logging to explain why the action is invalid
-            action_type = action["type"]
-            error_message = f"Invalid {action_type} action by Agent {agent_id}"
+        try:
+            if not self.state.is_valid_move(agent_id, action["type"], **action):
+                # Enhanced error logging to explain why the action is invalid
+                action_type = action["type"]
+                error_message = f"Invalid {action_type} action by Agent {agent_id}"
 
-            if action_type == "give_clue":
-                target_id = action.get("target_id")
-                clue = action.get("clue", {})
-                clue_type = clue.get("type")
-                clue_value = clue.get("value")
+                if action_type == "give_clue":
+                    target_id = action.get("target_id")
+                    clue = action.get("clue", {})
+                    clue_type = clue.get("type")
+                    clue_value = clue.get("value")
 
-                if self.state.clue_tokens <= 0:
-                    error_message = f"Invalid clue action: No clue tokens available"
-                elif target_id == agent_id:
-                    error_message = f"Invalid clue action: Cannot give clue to yourself"
-                elif target_id not in self.state.hands:
-                    error_message = f"Invalid clue action: Target player {target_id} does not exist"
-                elif not clue or not isinstance(clue, dict):
-                    error_message = f"Invalid clue action: Malformed clue format"
-                elif not clue_type or not clue_value:
-                    error_message = f"Invalid clue action: Missing clue type or value"
-                elif clue_type not in ["color", "number"]:
-                    error_message = f"Invalid clue action: Invalid clue type '{clue_type}'"
-                elif clue_type == "color" and clue_value not in [c.value for c in Color]:
-                    error_message = f"Invalid clue action: Invalid color value '{clue_value}'"
-                elif clue_type == "number" and not (1 <= clue_value <= 5):
-                    error_message = f"Invalid clue action: Invalid number value '{clue_value}'"
-                else:
-                    # Check if the clue matches any cards in target's hand
-                    target_hand = self.state.hands[target_id]
-                    matches = [i for i, card in enumerate(target_hand)
-                               if self._card_matches_clue(card, clue)]
-                    if not matches:
-                        error_message = f"Invalid clue action: No {clue_type} {clue_value} cards in player {target_id}'s hand"
-
-            elif action_type == "play_card":
-                card_index = action.get("card_index")
-                if card_index is None or not isinstance(card_index, int):
-                    error_message = f"Invalid play action: Invalid card index format"
-                elif not (0 <= card_index < len(self.state.hands[agent_id])):
-                    error_message = f"Invalid play action: Card index {card_index} out of range"
-                else:
-                    card = self.state.hands[agent_id][card_index]
-                    if self.state.completed_fireworks[card.color]:
-                        error_message = f"Invalid play action: Firework for {card.color} is already complete"
+                    if self.state.clue_tokens <= 0:
+                        error_message = f"Invalid clue action: No clue tokens available"
+                    elif target_id == agent_id:
+                        error_message = f"Invalid clue action: Cannot give clue to yourself"
+                    elif target_id not in self.state.hands:
+                        error_message = f"Invalid clue action: Target player {target_id} does not exist"
+                    elif not clue or not isinstance(clue, dict):
+                        error_message = f"Invalid clue action: Malformed clue format"
+                    elif not clue_type or not clue_value:
+                        error_message = f"Invalid clue action: Missing clue type or value"
+                    elif clue_type not in ["color", "number"]:
+                        error_message = f"Invalid clue action: Invalid clue type '{clue_type}'"
+                    elif clue_type == "color" and clue_value not in [c.value for c in Color]:
+                        error_message = f"Invalid clue action: Invalid color value '{clue_value}'"
+                    elif clue_type == "number":
+                        try:
+                            # Convert value to int if it's a string for comparison
+                            clue_value_int = int(clue_value) if isinstance(
+                                clue_value, str) else clue_value
+                            if not (1 <= clue_value_int <= 5):
+                                error_message = f"Invalid clue action: Invalid number value '{clue_value}'"
+                        except (ValueError, TypeError):
+                            error_message = f"Invalid clue action: Invalid number value '{clue_value}'"
                     else:
-                        firework_pile = self.state.firework_piles[card.color]
-                        next_number = len(firework_pile) + 1
-                        error_message = f"Invalid play action: Card {card.color} {card.number} cannot be played. Next needed card is {card.color} {next_number}"
+                        # Check if the clue matches any cards in target's hand
+                        target_hand = self.state.hands[target_id]
+                        matches = [i for i, card in enumerate(target_hand)
+                                   if self._card_matches_clue(card, clue)]
+                        if not matches:
+                            error_message = f"Invalid clue action: No {clue_type} {clue_value} cards in player {target_id}'s hand"
 
-            elif action_type == "discard":
-                card_index = action.get("card_index")
-                if self.state.clue_tokens >= 8:
-                    error_message = f"Invalid discard action: Clue tokens already at maximum (8)"
-                elif card_index is None or not isinstance(card_index, int):
-                    error_message = f"Invalid discard action: Invalid card index format"
-                elif not (0 <= card_index < len(self.state.hands[agent_id])):
-                    error_message = f"Invalid discard action: Card index {card_index} out of range"
-            else:
-                error_message = f"Invalid action: Unknown action type '{action_type}'"
+                elif action_type == "play_card":
+                    card_index = action.get("card_index")
+                    if card_index is None or not isinstance(card_index, int):
+                        error_message = f"Invalid play action: Invalid card index format"
+                    elif not (0 <= card_index < len(self.state.hands[agent_id])):
+                        error_message = f"Invalid play action: Card index {card_index} out of range"
+                    else:
+                        card = self.state.hands[agent_id][card_index]
+                        if self.state.completed_fireworks[card.color]:
+                            error_message = f"Invalid play action: Firework for {card.color} is already complete"
+                        else:
+                            firework_pile = self.state.firework_piles[card.color]
+                            next_number = len(firework_pile) + 1
+                            error_message = f"Invalid play action: Card {card.color} {card.number} cannot be played. Next needed card is {card.color} {next_number}"
+
+                elif action_type == "discard":
+                    card_index = action.get("card_index")
+                    if self.state.clue_tokens >= 8:
+                        error_message = f"Invalid discard action: Clue tokens already at maximum (8)"
+                    elif card_index is None or not isinstance(card_index, int):
+                        error_message = f"Invalid discard action: Invalid card index format"
+                    elif not (0 <= card_index < len(self.state.hands[agent_id])):
+                        error_message = f"Invalid discard action: Card index {card_index} out of range"
+                else:
+                    error_message = f"Invalid action: Unknown action type '{action_type}'"
 
             logger.error(error_message)
             # Instead of returning False, raise an exception
             raise ValueError(error_message)
 
-        # Execute the action
-        action_type = action["type"]
-        logger.debug(f"Processing {action_type} action")
+            # Execute the action
+            action_type = action["type"]
+            logger.debug(f"Processing {action_type} action")
 
-        if action_type == "play_card":
-            success = self._execute_play_card(agent_id, action["card_index"])
-        elif action_type == "give_clue":
-            success = self._execute_give_clue(
-                agent_id, action["target_id"], action["clue"])
-        elif action_type == "discard":
-            success = self._execute_discard(agent_id, action["card_index"])
-        else:
-            logger.error(f"Unknown action type: {action_type}")
-            raise ValueError(f"Unknown action type: {action_type}")
+            if action_type == "play_card":
+                success = self._execute_play_card(
+                    agent_id, action["card_index"])
+            elif action_type == "give_clue":
+                success = self._execute_give_clue(
+                    agent_id, action["target_id"], action["clue"])
+            elif action_type == "discard":
+                success = self._execute_discard(agent_id, action["card_index"])
+            else:
+                logger.error(f"Unknown action type: {action_type}")
+                raise ValueError(f"Unknown action type: {action_type}")
 
-        if success:
-            logger.info(f"Action executed successfully: {action}")
-            # Update current player and turn count
-            old_player = self.state.current_player
-            old_turn = self.state.turn_count
-            self.state.current_player = (
-                self.state.current_player + 1) % len(self.agents)
-            self.state.turn_count += 1
-            logger.debug(
-                f"Player advanced: {old_player} -> {self.state.current_player}, Turn count: {old_turn} -> {self.state.turn_count}")
-        else:
-            logger.warning(f"Action execution failed: {action}")
+            if success:
+                logger.info(f"Action executed successfully: {action}")
+                # Update current player and turn count
+                old_player = self.state.current_player
+                old_turn = self.state.turn_count
+                self.state.current_player = (
+                    self.state.current_player + 1) % len(self.agents)
+                self.state.turn_count += 1
+                logger.debug(
+                    f"Player advanced: {old_player} -> {self.state.current_player}, Turn count: {old_turn} -> {self.state.turn_count}")
+            else:
+                logger.warning(f"Action execution failed: {action}")
             # Instead of returning False, raise an exception
             raise ValueError(f"Action execution failed: {action}")
 
-        return success
+            return success
+        except Exception as e:
+            logger.critical(f"CRITICAL ERROR: Action execution failed: {e}")
+            logger.critical("Game terminated due to critical error")
+            self.state.game_over = True
+            raise RuntimeError(f"Game terminated due to critical error: {e}")
 
     def _execute_play_card(self, agent_id: int, card_index: int) -> bool:
         """Execute playing a card."""
@@ -338,8 +352,15 @@ class GameEngine:
         if clue["type"] == "color" and clue["value"] not in [c.value for c in Color]:
             return False
 
-        if clue["type"] == "number" and not (1 <= clue["value"] <= 5):
-            return False
+        if clue["type"] == "number":
+            try:
+                # Convert value to int if it's a string
+                value = int(clue["value"]) if isinstance(
+                    clue["value"], str) else clue["value"]
+                if not (1 <= value <= 5):
+                    return False
+            except (ValueError, TypeError):
+                return False
 
         return True
 
@@ -348,7 +369,13 @@ class GameEngine:
         if clue["type"] == "color":
             return card.color.value == clue["value"]
         else:  # number clue
-            return card.number == clue["value"]
+            try:
+                # Convert value to int if it's a string
+                clue_value = int(clue["value"]) if isinstance(
+                    clue["value"], str) else clue["value"]
+                return card.number == clue_value
+            except (ValueError, TypeError):
+                return False
 
     def _update_game_state(self):
         """Update the game state after an action."""

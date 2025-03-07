@@ -100,42 +100,56 @@ class GameState(BaseModel):
             return False
 
     def _validate_clue_action(self, agent_id: int, **kwargs) -> bool:
-        """Validate a clue-giving action."""
-        # Check clue tokens
+        """Validates if a clue action is legal."""
+        # Check if we have clue tokens
         if self.clue_tokens <= 0:
             return False
 
-        # Check target exists and is not self
+        # Extract clue parameters
         target_id = kwargs.get("target_id")
+        clue = kwargs.get("clue", {})
+        clue_type = clue.get("type")
+        value = clue.get("value")
+
+        # Check if target is valid
         if target_id is None or target_id == agent_id or target_id not in self.hands:
             return False
 
-        # Check clue format
-        clue = kwargs.get("clue")
-        if not clue or not isinstance(clue, dict):
-            return False
-
-        # Check clue type and value
-        clue_type = clue.get("type")
-        value = clue.get("value")
-        if not clue_type or not value:
-            return False
-
+        # Check if clue type is valid
         if clue_type not in ["color", "number"]:
             return False
 
+        # Check if clue value is valid
         if clue_type == "color" and value not in [c.value for c in Color]:
             return False
 
-        if clue_type == "number" and not (1 <= value <= 5):
-            return False
+        if clue_type == "number":
+            # Convert value to int if it's a string
+            try:
+                if isinstance(value, str):
+                    value = int(value)
+                if not (1 <= value <= 5):
+                    return False
+            except (ValueError, TypeError):
+                return False
 
-        # Check if the clue matches any cards in target's hand
+        # Check if the clue applies to at least one card
         target_hand = self.hands[target_id]
-        if not any(self._card_matches_clue(card, clue) for card in target_hand):
-            return False
+        applies_to_any_card = False
 
-        return True
+        for card in target_hand:
+            if clue_type == "color" and card.color.value == value:
+                applies_to_any_card = True
+                break
+            elif clue_type == "number":
+                # Convert value to int if it's a string for comparison
+                card_value = card.number
+                clue_value = int(value) if isinstance(value, str) else value
+                if card_value == clue_value:
+                    applies_to_any_card = True
+                    break
+
+        return applies_to_any_card
 
     def _validate_play_action(self, agent_id: int, **kwargs) -> bool:
         """Validate a card-playing action."""
