@@ -37,12 +37,11 @@ class DiscussionManager:
         """
         # Use default model if none specified
         if model_name is None:
-            model_name = "gpt-3.5-turbo"
+            model_name = "o3-mini"
 
-        # Initialize the model
+        # Initialize the model without temperature
         return ChatOpenAI(
-            model=model_name,
-            temperature=0.2
+            model=model_name
         )
 
     def conduct_discussion(self, game_state: GameState, agents: List[Any]) -> str:

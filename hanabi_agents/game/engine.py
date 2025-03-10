@@ -679,3 +679,43 @@ class GameEngine:
         if agent_id is not None:
             return {agent_id: self.action_errors.get(agent_id, [])}
         return self.action_errors
+
+    def get_game_over_reason(self) -> str:
+        """
+        Get the reason why the game is over.
+
+        Returns:
+            A string describing why the game is over
+        """
+        if not self.state.game_over:
+            return "Game is not over"
+
+        if self.state.fuse_tokens <= 0:
+            return "All fuse tokens used"
+
+        if len(self.state.deck) == 0:
+            return "Deck is empty"
+
+        # Check if all fireworks are complete
+        all_complete = True
+        for color, pile in self.state.firework_piles.items():
+            if not pile or pile[-1].number < 5:
+                all_complete = False
+                break
+
+        if all_complete:
+            return "All fireworks complete"
+
+        return "Unknown reason"
+
+    def get_game_state(self) -> "GameState":
+        """
+        Get the current game state.
+
+        Returns:
+            The current game state
+        """
+        return self.state
+
+    def is_game_over(self) -> bool:
+        return self.state.game_over

@@ -73,16 +73,20 @@ You are Player {agent_id} in a game of Hanabi. Analyze the current game state to
     # Add your hand (with hidden information)
     prompt += f"\nYour hand (Player {agent_id}):\n"
     for i, knowledge in enumerate(card_knowledge):
-        color_info = "Known: " + \
-            knowledge["color_clued"] if knowledge["color_clued"] else "Unknown"
-        number_info = "Known: " + \
-            str(knowledge["number_clued"]
-                ) if knowledge["number_clued"] else "Unknown"
+        if knowledge.get("color_clued"):
+            color_info = f"Known: {knowledge['color_clued']}"
+        else:
+            color_info = "Unknown"
+
+        if knowledge.get("number_clued"):
+            number_info = f"Known: {knowledge['number_clued']}"
+        else:
+            number_info = "Unknown"
 
         possible_colors = ", ".join(
-            knowledge["possible_colors"]) if knowledge["possible_colors"] else "All colors possible"
+            knowledge["possible_colors"]) if knowledge.get("possible_colors") else "All colors possible"
         possible_numbers = ", ".join(map(
-            str, knowledge["possible_numbers"])) if knowledge["possible_numbers"] else "All numbers possible"
+            str, knowledge["possible_numbers"])) if knowledge.get("possible_numbers") else "All numbers possible"
 
         prompt += f"- Card {i}: Color: {color_info} (Possible: {possible_colors}), Number: {number_info} (Possible: {possible_numbers})\n"
 

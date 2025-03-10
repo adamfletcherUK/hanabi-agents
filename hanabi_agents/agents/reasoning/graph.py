@@ -102,88 +102,68 @@ def setup_reasoning_graph(agent):
     ])
 
     # Wrap the tool node to ensure it has messages
-    def execute_tools_wrapper(state, store=None, config=None):
+    def execute_tools_wrapper(state, config=None):
         """
-        Wrapper function for executing tools with error handling.
+        Wrapper function to execute tools.
 
         Args:
             state: Current state of the reasoning graph
-            store: Memory store
             config: Configuration
 
         Returns:
             Updated state with tool execution results
         """
-        try:
-            # Log the state for debugging
-            logger.info(
-                f"Executing tools with state keys: {list(state.keys())}")
+        # Log the state for debugging
+        logger.info(
+            f"Executing tools with state keys: {list(state.keys())}")
 
-            # Make sure we have the agent_id in the state
-            agent_id = state.get("agent_id")
-            if agent_id is None:
-                logger.warning("No agent_id in state, using default agent_id")
-                agent_id = agent.agent_id
+        # Check if we have tool calls in the state
+        tool_calls = state.get("proposed_tool_calls", [])
+        if not tool_calls:
+            logger.warning(
+                "No tool calls found in state, returning state as is")
+            return state
 
-            # Track the execution path
-            execution_path = state.get("execution_path", [])
-            execution_path.append("execute_tools")
+        # Create a copy of the state to avoid modifying the original
+        new_state = state.copy()
 
-            # Create a copy of the state to avoid modifying the original
-            new_state = state.copy()
-            new_state["execution_path"] = execution_path
-            new_state["agent_id"] = agent_id
+        # Execute each tool call
+        for tool_call in tool_calls:
+            # Extract the tool name and arguments
+            tool_name = tool_call.get("name")
+            tool_args = tool_call.get("args", {})
 
-            # Check if we have proposed tool calls or messages with tool calls
-            has_tool_calls = False
+            # Find the matching tool
+            matching_tool = next(
+                (tool for tool in tools if tool.name == tool_name), None)
 
-            # First check for proposed_tool_calls
-            if "proposed_tool_calls" in new_state and new_state["proposed_tool_calls"]:
-                logger.info(
-                    f"Found proposed_tool_calls in state: {new_state['proposed_tool_calls']}")
-                has_tool_calls = True
+            if matching_tool:
+                try:
+                    # Execute the tool
+                    result = matching_tool.invoke(tool_args)
 
-            # Then check for messages with tool calls
-            elif "messages" in new_state and new_state["messages"]:
-                last_message = new_state["messages"][-1]
-                if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-                    logger.info(
-                        f"Found tool_calls in last message: {last_message.tool_calls}")
-                    has_tool_calls = True
+                    # Store the result in the state
+                    new_state["action_result"] = result
+                except Exception as e:
+                    # Handle tool execution errors
+                    logger.error(f"Error executing tool {tool_name}: {e}")
+                    new_state["errors"] = new_state.get("errors", []) + \
+                        [f"Error executing tool {tool_name}: {e}"]
+            else:
+                # Handle unknown tool
+                logger.error(f"Unknown tool: {tool_name}")
+                new_state["errors"] = new_state.get("errors", []) + \
+                    [f"Unknown tool: {tool_name}"]
 
-            # If we don't have tool calls, return the state as is
-            if not has_tool_calls:
-                logger.warning(
-                    "No tool calls found in state, returning state as is")
-                return new_state
-
-            # Execute the tools
-            logger.info(f"Executing tools for agent {agent_id}")
-
-            # Create a config with the agent instance
-            tool_config = {"agent_id": agent_id, "agent_instance": agent}
-
-            # Execute the tools with the config
-            result = tool_node_with_error_handling.invoke(
-                new_state, config=tool_config)
-
-            # Return the result
-            return result
-        except Exception as e:
-            # Log the error
-            logger.error(f"Error executing tools: {e}")
-
-            # Handle the error
-            return handle_tool_error(state, agent_id=agent.agent_id)
+        return new_state
 
     # Create a custom node to handle the routing and execution
-    def router_and_execute(state, store=None, config=None):
+    def router_and_execute(state, config=None):
         """
         Router function to determine whether to execute tools or end the reasoning process.
 
         Args:
             state: Current state of the reasoning graph
-            store: Memory store
             config: Configuration
 
         Returns:
@@ -210,18 +190,18 @@ def setup_reasoning_graph(agent):
 
         if should_execute == "execute_tools":
             logger.info("Router decided to execute tools")
-            return execute_tools_wrapper(new_state, store, config)
+            return execute_tools_wrapper(new_state, config)
         else:
             logger.info("Router decided not to execute tools, returning state")
             return new_state
 
     # Add nodes for each reasoning step with store and config access
-    builder.add_node("analyze_state", lambda state, store=None, config=None: analyze_game_state(
-        state, agent.model, agent.agent_id, agent.memory, store=store, config=config))
-    builder.add_node("generate_thoughts", lambda state, store=None, config=None: generate_thoughts(
-        state, agent.model, agent.agent_id, agent.memory, store=store, config=config))
-    builder.add_node("propose_action", lambda state, store=None, config=None: propose_action(
-        state, agent.model, agent.agent_id, agent.memory, store=store, config=config))
+    builder.add_node("analyze_state", lambda state, config=None: analyze_game_state(
+        state, agent.model, agent.agent_id, agent.memory, config=config))
+    builder.add_node("generate_thoughts", lambda state, config=None: generate_thoughts(
+        state, agent.model, agent.agent_id, agent.memory, config=config))
+    builder.add_node("propose_action", lambda state, config=None: propose_action(
+        state, agent.model, agent.agent_id, agent.memory, config=config))
     builder.add_node("router_and_execute", router_and_execute)
 
     # Add edges between nodes

@@ -14,7 +14,6 @@ def analyze_game_state(
     model,
     agent_id: int,
     memory: Dict[str, Any],
-    store=None,
     config=None
 ) -> Dict[str, Any]:
     """
@@ -28,7 +27,6 @@ def analyze_game_state(
         model: Language model to use for analysis
         agent_id: ID of the agent
         memory: Agent's memory
-        store: Memory store
         config: Configuration
 
     Returns:
@@ -80,13 +78,6 @@ def analyze_game_state(
     messages.append(response)
     new_state["messages"] = messages
 
-    # Store the analysis in the memory if store is available
-    if store is not None:
-        store.put(
-            f"agent_{agent_id}_analysis_{len(game_history)}",
-            {"prompt": prompt, "response": response.content}
-        )
-
     return new_state
 
 
@@ -95,7 +86,6 @@ def generate_thoughts(
     model,
     agent_id: int,
     memory: Dict[str, Any],
-    store=None,
     config=None
 ) -> Dict[str, Any]:
     """
@@ -110,7 +100,6 @@ def generate_thoughts(
         model: Language model to use for thought generation
         agent_id: ID of the agent
         memory: Agent's memory
-        store: Memory store
         config: Configuration
 
     Returns:
@@ -174,13 +163,6 @@ def generate_thoughts(
     thoughts = _extract_thoughts(response.content)
     new_state["current_thoughts"] = thoughts
 
-    # Store the thoughts in the memory if store is available
-    if store is not None:
-        store.put(
-            f"agent_{agent_id}_thoughts_{len(game_history)}",
-            {"prompt": prompt, "response": response.content, "thoughts": thoughts}
-        )
-
     return new_state
 
 
@@ -189,7 +171,6 @@ def propose_action(
     model,
     agent_id: int,
     memory: Dict[str, Any],
-    store=None,
     config=None
 ) -> Dict[str, Any]:
     """
@@ -203,7 +184,6 @@ def propose_action(
         model: Language model to use for action proposal
         agent_id: ID of the agent
         memory: Agent's memory
-        store: Memory store
         config: Configuration
 
     Returns:
@@ -269,13 +249,6 @@ def propose_action(
     # Extract the proposed action from the response
     proposed_action = _extract_action(response.content)
     new_state["proposed_action"] = proposed_action
-
-    # Store the action proposal in the memory if store is available
-    if store is not None:
-        store.put(
-            f"agent_{agent_id}_action_{len(game_history)}",
-            {"prompt": prompt, "response": response.content, "action": proposed_action}
-        )
 
     return new_state
 

@@ -164,6 +164,58 @@ class GameState(BaseModel):
         logger.debug(f"View created for agent {agent_id}")
         return view
 
+    def get_possible_colors(self, agent_id: int, card_index: int) -> List[Color]:
+        """
+        Get the possible colors for a card based on clues received.
+
+        Args:
+            agent_id: The ID of the agent
+            card_index: The index of the card in the agent's hand
+
+        Returns:
+            A list of possible colors for the card
+        """
+        # Check if the agent and card index are valid
+        if agent_id not in self.hands or card_index >= len(self.hands[agent_id]):
+            logger.warning(
+                f"Invalid agent_id or card_index: {agent_id}, {card_index}")
+            return list(Color)  # Return all colors if invalid
+
+        card = self.hands[agent_id][card_index]
+
+        # If the card has received a color clue, return only that color
+        if card.color_clued:
+            return [card.color]
+
+        # Otherwise, return all colors
+        return list(Color)
+
+    def get_possible_numbers(self, agent_id: int, card_index: int) -> List[int]:
+        """
+        Get the possible numbers for a card based on clues received.
+
+        Args:
+            agent_id: The ID of the agent
+            card_index: The index of the card in the agent's hand
+
+        Returns:
+            A list of possible numbers for the card
+        """
+        # Check if the agent and card index are valid
+        if agent_id not in self.hands or card_index >= len(self.hands[agent_id]):
+            logger.warning(
+                f"Invalid agent_id or card_index: {agent_id}, {card_index}")
+            return list(range(1, 6))  # Return all numbers if invalid
+
+        card = self.hands[agent_id][card_index]
+
+        # If the card has received a number clue, return only that number
+        if card.number_clued:
+            return [card.number]
+
+        # Otherwise, return all numbers
+        return list(range(1, 6))
+
     def is_valid_move(self, agent_id: int, action_type: str, **kwargs) -> bool:
         """
         Validates if a move is legal according to Hanabi rules.
