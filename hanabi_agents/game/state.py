@@ -87,6 +87,7 @@ class GameState(BaseModel):
     clue_tokens: int = 8
     max_clue_tokens: int = 8
     fuse_tokens: int = 3
+    max_fuse_tokens: int = 3
 
     # Game state tracking
     current_player: int = 0
@@ -132,6 +133,7 @@ class GameState(BaseModel):
             clue_tokens=self.clue_tokens,
             max_clue_tokens=self.max_clue_tokens,
             fuse_tokens=self.fuse_tokens,
+            max_fuse_tokens=self.max_fuse_tokens,
             current_player=self.current_player,
             turn_count=self.turn_count,
             game_over=self.game_over,

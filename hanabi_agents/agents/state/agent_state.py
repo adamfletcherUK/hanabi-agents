@@ -56,6 +56,9 @@ class AgentStateDict(TypedDict, total=False):
     # Execution tracking
     execution_path: List[str]
 
+    # Phase tracking
+    is_action_phase: bool
+
 
 class AgentMemory(BaseModel):
     """Enhanced memory management for the agent"""
@@ -177,6 +180,7 @@ class AgentState:
         self.proposed_tool_calls = []
         self.errors = []
         self.execution_path = []
+        self.is_action_phase = False
 
     def dict(self) -> Dict[str, Any]:
         """
@@ -197,7 +201,8 @@ class AgentState:
             "messages": self.messages,
             "proposed_tool_calls": self.proposed_tool_calls,
             "errors": self.errors,
-            "execution_path": self.execution_path
+            "execution_path": self.execution_path,
+            "is_action_phase": self.is_action_phase
         }
 
     @classmethod
@@ -226,4 +231,5 @@ class AgentState:
             "proposed_tool_calls", [])
         agent_state.errors = state_dict.get("errors", [])
         agent_state.execution_path = state_dict.get("execution_path", [])
+        agent_state.is_action_phase = state_dict.get("is_action_phase", False)
         return agent_state

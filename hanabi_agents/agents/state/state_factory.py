@@ -42,7 +42,8 @@ def create_initial_state(
 def create_action_state(
     game_state: GameState,
     agent_id: int,
-    discussion_summary: str = None
+    discussion_summary: str = None,
+    agent_memory=None
 ) -> Dict[str, Any]:
     """
     Create a state for action decision-making.
@@ -51,6 +52,7 @@ def create_action_state(
         game_state: Current state of the game
         agent_id: ID of the agent
         discussion_summary: Summary of the pre-action discussion
+        agent_memory: Optional agent memory object to include proposed tool calls
 
     Returns:
         Dictionary representation of the action state
@@ -71,6 +73,21 @@ def create_action_state(
     # Add the discussion summary if provided
     if discussion_summary:
         agent_state.discussion_history = [{"summary": discussion_summary}]
+
+    # Add a flag to indicate this is the action phase
+    agent_state.is_action_phase = True
+
+    # Include proposed tool calls from agent memory if available
+    if agent_memory:
+        if hasattr(agent_memory, "get_memory"):
+            # If it's an AgentMemory object
+            proposed_tool_calls = agent_memory.get_memory(
+                "proposed_tool_calls")
+            if proposed_tool_calls:
+                agent_state.proposed_tool_calls = proposed_tool_calls
+        elif isinstance(agent_memory, dict) and "proposed_tool_calls" in agent_memory:
+            # If it's a dictionary
+            agent_state.proposed_tool_calls = agent_memory["proposed_tool_calls"]
 
     return agent_state.dict()
 

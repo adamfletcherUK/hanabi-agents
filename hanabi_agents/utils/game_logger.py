@@ -4,6 +4,17 @@ from typing import Dict, Optional
 # Set up logger for this module
 logger = logging.getLogger(__name__)
 
+# Try to get the console logger, if it exists
+try:
+    console_logger = logging.getLogger('console')
+    # Check if the console logger has any handlers
+    if not console_logger.handlers:
+        # If no handlers, use the module logger to avoid duplicate output
+        console_logger = logger
+except:
+    # Fallback to regular logger if console logger doesn't exist
+    console_logger = logger
+
 # Color emoji mapping for consistent display
 COLOR_EMOJI = {
     "red": "🔴",
@@ -26,10 +37,12 @@ def log_game_state(engine, print_to_console=False):
         engine: The GameEngine instance
         print_to_console: Whether to also print the information to the console
     """
+    # Always log to file
     logger.info("----- DETAILED GAME STATE -----")
 
-    if print_to_console:
-        print("\n----- DETAILED GAME STATE -----")
+    # Only log to console if requested and if console_logger is different from logger
+    if print_to_console and console_logger is not logger:
+        console_logger.info("\n----- DETAILED GAME STATE -----")
 
     # Log firework piles
     firework_piles = []
@@ -42,9 +55,11 @@ def log_game_state(engine, print_to_console=False):
             firework_piles.append(f"{emoji}: empty")
 
     firework_str = f"🎆 Firework piles: {', '.join(firework_piles)}"
+    # Always log to file
     logger.info(firework_str)
-    if print_to_console:
-        print(firework_str)
+    # Only log to console if requested and if console_logger is different from logger
+    if print_to_console and console_logger is not logger:
+        console_logger.info(firework_str)
 
     # Log player hands and their knowledge
     for player_id, hand in engine.state.hands.items():
@@ -55,9 +70,11 @@ def log_game_state(engine, print_to_console=False):
             actual_hand.append(f"{i}: '{emoji}{card.number}'")
 
         actual_hand_str = f"👁️ Player {player_id}'s actual hand: [{', '.join(actual_hand)}]"
+        # Always log to file
         logger.info(actual_hand_str)
-        if print_to_console:
-            print(actual_hand_str)
+        # Only log to console if requested and if console_logger is different from logger
+        if print_to_console and console_logger is not logger:
+            console_logger.info(actual_hand_str)
 
         # Log the player's knowledge about their own hand
         card_knowledge = engine.state.get_card_knowledge(player_id)
@@ -77,9 +94,11 @@ def log_game_state(engine, print_to_console=False):
             player_view.append(f"{i}: '{color_info} {number_info}'")
 
         player_view_str = f"🧠 Player {player_id}'s knowledge: [{', '.join(player_view)}]"
+        # Always log to file
         logger.info(player_view_str)
-        if print_to_console:
-            print(player_view_str)
+        # Only log to console if requested and if console_logger is different from logger
+        if print_to_console and console_logger is not logger:
+            console_logger.info(player_view_str)
 
     # Log discard pile summary
     discard_summary = engine.state.get_discarded_cards()
@@ -96,19 +115,25 @@ def log_game_state(engine, print_to_console=False):
             discard_info.append(f"{card}: {count}")
 
     discard_str = f"🗑️ Discard pile: {', '.join(discard_info) if discard_info else 'empty'}"
+    # Always log to file
     logger.info(discard_str)
-    if print_to_console:
-        print(discard_str)
+    # Only log to console if requested and if console_logger is different from logger
+    if print_to_console and console_logger is not logger:
+        console_logger.info(discard_str)
 
     # Log remaining deck size
     deck_str = f"🎴 Remaining deck size: {len(engine.state.deck)}"
+    # Always log to file
     logger.info(deck_str)
-    if print_to_console:
-        print(deck_str)
+    # Only log to console if requested and if console_logger is different from logger
+    if print_to_console and console_logger is not logger:
+        console_logger.info(deck_str)
 
+    # Always log to file
     logger.info("----- END DETAILED STATE -----")
-    if print_to_console:
-        print("----- END DETAILED STATE -----\n")
+    # Only log to console if requested and if console_logger is different from logger
+    if print_to_console and console_logger is not logger:
+        console_logger.info("----- END DETAILED STATE -----\n")
 
 
 def log_turn_info(turn_count, current_player_name, current_player_id, clue_tokens, max_clue_tokens, fuse_tokens, score, print_to_console=False):
@@ -116,7 +141,7 @@ def log_turn_info(turn_count, current_player_name, current_player_id, clue_token
     Log information about the current turn.
 
     Args:
-        turn_count: The current turn number
+        turn_count: The current turn count
         current_player_name: The name of the current player
         current_player_id: The ID of the current player
         clue_tokens: The number of clue tokens available
@@ -125,25 +150,20 @@ def log_turn_info(turn_count, current_player_name, current_player_id, clue_token
         score: The current score
         print_to_console: Whether to also print the information to the console
     """
-    turn_info = f"=== Turn {turn_count} ==="
-    player_info = f"Current player: {current_player_name} (Player {current_player_id})"
-    clue_info = f"Clue tokens: {clue_tokens}/{max_clue_tokens}"
-    fuse_info = f"Fuse tokens: {fuse_tokens}/3"
-    score_info = f"Score: {score}/25"
+    logger.info(f"=== Turn {turn_count} ===")
+    logger.info(
+        f"Current player: {current_player_name} (Player {current_player_id})")
+    logger.info(f"Clue tokens: {clue_tokens}/{max_clue_tokens}")
+    logger.info(f"Fuse tokens: {fuse_tokens}/3")
+    logger.info(f"Score: {score}/25")
 
-    logger.info(turn_info)
-    logger.info(player_info)
-    logger.info(clue_info)
-    logger.info(fuse_info)
-    logger.info(score_info)
-
-    if print_to_console:
-        print(f"\n=== 🎲 Turn {turn_count} ===")
-        print(
+    if print_to_console and console_logger is not logger:
+        console_logger.info(f"\n=== 🎲 Turn {turn_count} ===")
+        console_logger.info(
             f"Current player: 👤 {current_player_name} (Player {current_player_id})")
-        print(f"🔍 Clue tokens: {clue_tokens}/{max_clue_tokens}")
-        print(f"💣 Fuse tokens: {fuse_tokens}/3")
-        print(f"🏆 Score: {score}/25")
+        console_logger.info(f"🔍 Clue tokens: {clue_tokens}/{max_clue_tokens}")
+        console_logger.info(f"💣 Fuse tokens: {fuse_tokens}/3")
+        console_logger.info(f"🏆 Score: {score}/25")
 
 
 def log_action_result(action, result, player_name, print_to_console=False):
@@ -158,68 +178,82 @@ def log_action_result(action, result, player_name, print_to_console=False):
     """
     action_type = action.get("type", "unknown")
 
-    # Handle case where result is a boolean or not a dictionary
-    if not isinstance(result, dict):
-        action_str = f"Action completed: {result}"
-        logger.info(action_str)
-        if print_to_console:
-            print(action_str)
-        return
+    if action_type == "play_card":
+        card_index = action.get("card_index", "?")
+        logger.info(
+            f"Player {player_name} played card at position {card_index}")
 
-    if action_type == "play_card" and "card" in result:
-        card = result["card"]
-        success = result.get("success", False)
-        emoji = "✅" if success else "❌"
-
-        if hasattr(card, "color") and hasattr(card, "number"):
-            color_emoji = COLOR_EMOJI.get(card.color.value, "")
-            action_str = f"Card played: {color_emoji}{card.number} {emoji}"
-        else:
-            action_str = f"Card played: {card} {emoji}"
-
-        logger.info(action_str)
-        if print_to_console:
-            print(action_str)
+        if isinstance(result, dict) and "card" in result:
+            card = result["card"]
+            success = result.get("success", False)
+            if hasattr(card, "color") and hasattr(card, "number"):
+                color_name = card.color.value if hasattr(
+                    card.color, "value") else str(card.color)
+                color_emoji = COLOR_EMOJI.get(color_name, "")
+                logger.info(
+                    f"Card was {color_emoji}{card.number}, play was {'successful' if success else 'unsuccessful'}")
+                if print_to_console and console_logger is not logger:
+                    console_logger.info(
+                        f"Card was {color_emoji}{card.number}, play was {'✅ successful' if success else '❌ unsuccessful'}")
+            else:
+                logger.info(
+                    f"Card was {card}, play was {'successful' if success else 'unsuccessful'}")
+                if print_to_console and console_logger is not logger:
+                    console_logger.info(
+                        f"Card was {card}, play was {'✅ successful' if success else '❌ unsuccessful'}")
 
     elif action_type == "give_clue":
-        # Extract clue details
-        clue = action.get("clue", {})
-        clue_type = clue.get("type", "unknown")
-        clue_value = clue.get("value", "unknown")
         target_id = action.get("target_id", "?")
+        clue = action.get("clue", {})
+        clue_type = clue.get("type", "?")
+        clue_value = clue.get("value", "?")
 
-        # Format the clue value with emoji if it's a color
         if clue_type == "color":
             color_emoji = COLOR_EMOJI.get(clue_value, "")
-            clue_desc = f"{color_emoji} color"
+            logger.info(
+                f"Player {player_name} gave {color_emoji} color clue to Player {target_id}")
+            if print_to_console and console_logger is not logger:
+                console_logger.info(
+                    f"Player {player_name} gave {color_emoji} color clue to Player {target_id}")
         else:
-            clue_desc = f"number {clue_value}"
+            logger.info(
+                f"Player {player_name} gave number {clue_value} clue to Player {target_id}")
+            if print_to_console and console_logger is not logger:
+                console_logger.info(
+                    f"Player {player_name} gave number {clue_value} clue to Player {target_id}")
 
-        affected_count = len(result.get('affected_cards', []))
-        action_str = f"Clue given: {clue_desc} to Player {target_id}, affected {affected_count} cards"
+        if isinstance(result, dict) and "affected_cards" in result:
+            affected_cards = result["affected_cards"]
+            logger.info(
+                f"Clue affected {len(affected_cards)} cards: {affected_cards}")
+            if print_to_console and console_logger is not logger:
+                console_logger.info(
+                    f"Clue affected {len(affected_cards)} cards: {affected_cards}")
 
-        logger.info(action_str)
-        if print_to_console:
-            print(action_str)
+    elif action_type == "discard":
+        card_index = action.get("card_index", "?")
+        logger.info(
+            f"Player {player_name} discarded card at position {card_index}")
 
-    elif action_type == "discard" and "card" in result:
-        card = result["card"]
+        if isinstance(result, dict) and "card" in result:
+            card = result["card"]
+            if hasattr(card, "color") and hasattr(card, "number"):
+                color_name = card.color.value if hasattr(
+                    card.color, "value") else str(card.color)
+                color_emoji = COLOR_EMOJI.get(color_name, "")
+                logger.info(f"Discarded card was {color_emoji}{card.number}")
+                if print_to_console and console_logger is not logger:
+                    console_logger.info(
+                        f"Discarded card was {color_emoji}{card.number}")
+            else:
+                logger.info(f"Discarded card was {card}")
+                if print_to_console and console_logger is not logger:
+                    console_logger.info(f"Discarded card was {card}")
 
-        if hasattr(card, "color") and hasattr(card, "number"):
-            color_emoji = COLOR_EMOJI.get(card.color.value, "")
-            action_str = f"Card discarded: {color_emoji}{card.number}"
-        else:
-            action_str = f"Card discarded: {card}"
-
-        logger.info(action_str)
-        if print_to_console:
-            print(action_str)
-    else:
-        # Generic fallback for other result formats
-        action_str = f"Action result: {result}"
-        logger.info(action_str)
-        if print_to_console:
-            print(action_str)
+    # Log the raw result for debugging
+    logger.info(f"Action completed: {result}")
+    if print_to_console and console_logger is not logger:
+        console_logger.info(f"Action completed: {result}")
 
 
 def format_action_for_display(action, player_name):
@@ -262,22 +296,17 @@ def format_action_for_display(action, player_name):
 
 def log_game_over(score, reason, print_to_console=False):
     """
-    Log game over information.
+    Log information about the game ending.
 
     Args:
         score: The final score
         reason: The reason the game ended
         print_to_console: Whether to also print the information to the console
     """
-    game_over_str = "=== Game Over ==="
-    score_str = f"Final score: {score}/25"
-    reason_str = f"Reason: {reason}"
-
-    logger.info(game_over_str)
-    logger.info(score_str)
-    logger.info(reason_str)
+    logger.info(f"Game over! Final score: {score}/25")
+    logger.info(f"Reason: {reason}")
 
     if print_to_console:
-        print("\n=== 🏁 Game Over ===")
-        print(f"🏆 Final score: {score}/25")
-        print(f"📋 Reason: {reason}")
+        console_logger.info(f"\n🎮 GAME OVER! 🎮")
+        console_logger.info(f"Final score: {score}/25")
+        console_logger.info(f"Reason: {reason}")

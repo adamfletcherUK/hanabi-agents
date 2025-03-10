@@ -76,15 +76,15 @@ You are Player {agent_id} in a game of Hanabi. Based on your analysis and strate
 
 You have access to the following tools:
 
-1. play_card: Play a card from your hand
+1. play_card_tool: Play a card from your hand
    - card_index: Index of the card to play (0-indexed)
 
-2. give_clue: Give a clue to another player
+2. give_clue_tool: Give a clue to another player
    - target_id: ID of the player to give the clue to
    - clue_type: Type of clue to give ("color" or "number")
    - clue_value: Value of the clue (e.g., "red", "1")
 
-3. discard: Discard a card from your hand
+3. discard_tool: Discard a card from your hand
    - card_index: Index of the card to discard (0-indexed)
 """
 
@@ -103,10 +103,16 @@ You have access to the following tools:
 Based on your analysis and thoughts, you must call ONE of the available tools to take an action in the game.
 
 IMPORTANT: 
+- You MUST call a tool - responding with natural language only is not allowed.
+- Your tool call MUST directly address your strategic thoughts listed above.
+- For EACH thought, explain how your chosen action addresses or relates to that thought.
+- Your action should be the logical conclusion of your strategic reasoning.
 - When giving clues, make sure the clue will actually affect at least one card in the target player's hand.
 - Check the "Valid clues" section above to ensure your clue is valid.
 - You MUST use one of the tools above - do not respond with natural language.
 - Only call ONE tool.
+
+Before calling the tool, provide a brief explanation of how your chosen action addresses each of your thoughts, numbered to match the thought list above.
 """
 
     # Add error information if available

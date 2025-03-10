@@ -41,7 +41,8 @@ class DiscussionManager:
 
         # Initialize the model without temperature
         return ChatOpenAI(
-            model=model_name
+            model=model_name,
+            verbose=False  # Disable verbose mode to prevent stdout logging
         )
 
     def conduct_discussion(self, game_state: GameState, agents: List[Any]) -> str:

@@ -8,6 +8,7 @@ from ..game.state import GameState
 from .state.state_factory import create_initial_state, create_action_state
 from .reasoning.graph import setup_reasoning_graph
 from .tools import play_card_tool, give_clue_tool, discard_tool
+from .reasoning.nodes import _normalize_tool_name
 import datetime
 from .state.agent_state import AgentMemory, ActionError, ActionResult
 
@@ -73,29 +74,27 @@ class AIAgent(Agent):
         # Initialize the model and bind tools
         model = ChatOpenAI(
             model=model_name,
-            api_key=api_key
+            api_key=api_key,
+            verbose=False  # Disable verbose mode to prevent stdout logging
         )
 
-        # Bind tools to the model
+        # Bind tools to the model with tool_choice="required" to force tool calls
         return model.bind_tools([
             play_card_tool,
             give_clue_tool,
             discard_tool
-        ])
+        ], tool_choice="required")
 
     def participate_in_discussion(self, game_state: GameState, discussion_history: List[Dict[str, Any]]) -> str:
         """
-        Analyze the game state and suggest a tool call (action).
-
-        For the active player, this method analyzes the current game state,
-        generates strategic thoughts, and suggests a tool call (action).
+        Analyze the game state and generate a contribution to the discussion.
 
         Args:
             game_state: Current state of the game (filtered for this agent)
-            discussion_history: History of discussion contributions (empty for our implementation)
+            discussion_history: History of the discussion so far
 
         Returns:
-            The agent's analysis and suggested tool call
+            A string containing the agent's contribution to the discussion
         """
         logger.info(f"Agent {self.agent_id} analyzing game state")
 
@@ -121,6 +120,8 @@ class AIAgent(Agent):
 
         # Store the thoughts in the agent's memory
         self.agent_memory.thoughts = thoughts
+        # Also store in the memory store for immediate access
+        self.store_memory("current_thoughts", thoughts)
 
         # Store the messages for later reference
         self.store_memory("messages", messages)
@@ -134,9 +135,13 @@ class AIAgent(Agent):
 
         # Store the tool calls for later use in decide_action
         if tool_calls:
+            logger.info(f"Storing tool calls in memory: {tool_calls}")
             self.store_memory("tool_calls", tool_calls)
             # Also store in the agent's memory for persistence
             self.agent_memory.store_memory("proposed_tool_calls", tool_calls)
+        else:
+            logger.warning(
+                f"No tool calls found in messages after reasoning graph execution")
 
         # Format the thoughts and tool calls into a contribution
         contribution = "## Game State Analysis\n\n"
@@ -146,7 +151,16 @@ class AIAgent(Agent):
         contribution += "\n## Suggested Tool Call\n\n"
         if tool_calls:
             tool_call = tool_calls[0]  # Get the first tool call
-            tool_name = tool_call.get("name")
+            original_tool_name = tool_call.get("name", "")
+
+            # Normalize the tool name to match official names
+            tool_name = _normalize_tool_name(original_tool_name)
+
+            # Log if the tool name was normalized
+            if tool_name != original_tool_name:
+                logger.info(
+                    f"Normalized tool name from '{original_tool_name}' to '{tool_name}'")
+
             tool_args = tool_call.get("args", {})
 
             if tool_name == "play_card_tool":
@@ -186,22 +200,39 @@ class AIAgent(Agent):
         # Get the tool calls from memory (set during participate_in_discussion)
         tool_calls = self.get_memory_from_store("tool_calls")
 
+        # Also try to get from agent memory if not found in memory store
+        if not tool_calls:
+            tool_calls = self.agent_memory.get_memory("proposed_tool_calls")
+            if tool_calls:
+                logger.info(
+                    f"Retrieved tool calls from agent memory: {tool_calls}")
+                # Store back in memory store for consistency
+                self.store_memory("tool_calls", tool_calls)
+
         # If no tool calls were stored during discussion, run the reasoning graph again
         if not tool_calls:
             logger.warning(
                 f"No tool calls found in memory, running reasoning graph again")
 
-            # Create the action state
+            # Create the action state with agent memory to include proposed tool calls
             state = create_action_state(
                 game_state=game_state,
                 agent_id=self.agent_id,
-                discussion_summary=""
+                discussion_summary="",
+                agent_memory=self.agent_memory
             )
 
-            # Run the reasoning graph
+            # Create a model with explicit tool_choice="required" for this run
+            forced_model = self.model.bind(tool_choice="required")
+
+            # Run the reasoning graph with the forced model
             result = self.reasoning_graph.invoke(
                 state,
-                config={"agent_id": self.agent_id, "agent_instance": self}
+                config={
+                    "agent_id": self.agent_id,
+                    "agent_instance": self,
+                    "model": forced_model  # Pass the forced model to the graph
+                }
             )
 
             # Extract thoughts and store them in the agent's memory
@@ -218,6 +249,8 @@ class AIAgent(Agent):
                 if hasattr(message, "tool_calls") and message.tool_calls:
                     tool_calls = message.tool_calls
                     # Store the tool calls in memory
+                    logger.info(
+                        f"Storing tool calls from second reasoning run: {tool_calls}")
                     self.store_memory("tool_calls", tool_calls)
                     # Also store in the agent's memory for persistence
                     self.agent_memory.store_memory(
@@ -270,7 +303,16 @@ class AIAgent(Agent):
 
         # Get the first tool call
         tool_call = tool_calls[0]
-        tool_name = tool_call.get("name")
+        original_tool_name = tool_call.get("name", "")
+
+        # Normalize the tool name to match official names
+        tool_name = _normalize_tool_name(original_tool_name)
+
+        # Log if the tool name was normalized
+        if tool_name != original_tool_name:
+            logger.info(
+                f"Normalized tool name from '{original_tool_name}' to '{tool_name}'")
+
         tool_args = tool_call.get("args", {})
 
         # Check if the tool call is a discard when at max clue tokens
@@ -440,7 +482,19 @@ class AIAgent(Agent):
         Returns:
             Value from memory store or default
         """
-        return self.memory_store.get(key, default)
+        # First check direct keys in memory_store
+        if key in self.memory_store:
+            return self.memory_store[key]
+
+        # Then check in agent memory's custom_memory
+        agent_memory_dict = self.memory_store.get(f"agent_{self.agent_id}")
+        if agent_memory_dict and isinstance(agent_memory_dict, dict):
+            custom_memory = agent_memory_dict.get("custom_memory", {})
+            if key in custom_memory:
+                return custom_memory[key]
+
+        # If not found in either place, return the default
+        return default
 
     def store_memory(self, key, value):
         """
