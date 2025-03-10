@@ -47,6 +47,8 @@ class GameState(BaseModel):
     score_history: List[ScoreHistory] = Field(default_factory=list)
     completed_fireworks: Dict[Color, bool] = Field(
         default_factory=lambda: {color: False for color in Color})
+    clue_history: List[Dict[str, Any]] = Field(
+        default_factory=list)  # Track clue history
 
     def get_view_for(self, agent_id: int) -> "GameState":
         """Get a filtered view of the game state for the given agent."""
@@ -67,7 +69,8 @@ class GameState(BaseModel):
             score=self.score,
             score_history=self.score_history.copy(),
             completed_fireworks={color: completed for color,
-                                 completed in self.completed_fireworks.items()}
+                                 completed in self.completed_fireworks.items()},
+            clue_history=self.clue_history.copy()  # Include clue history in the view
         )
 
         # Copy all hands except the agent's own hand
@@ -267,3 +270,32 @@ class GameState(BaseModel):
                 for entry in self.score_history
             ]
         }
+
+    def add_clue_event(self, giver_id: int, receiver_id: int, clue_type: str, clue_value: Any, affected_indices: List[int]) -> None:
+        """
+        Track a clue given during the game.
+
+        Args:
+            giver_id: The ID of the agent giving the clue
+            receiver_id: The ID of the agent receiving the clue
+            clue_type: The type of clue (color or number)
+            clue_value: The value of the clue
+            affected_indices: The indices of cards affected by the clue
+        """
+        clue_event = {
+            "turn": self.turn_count,
+            "timestamp": datetime.now().isoformat(),
+            "giver_id": giver_id,
+            "receiver_id": receiver_id,
+            "clue_type": clue_type,
+            "clue_value": clue_value,
+            "affected_indices": affected_indices
+        }
+
+        # Add to clue history
+        self.clue_history.append(clue_event)
+
+        # Log the clue
+        logger.debug(f"Clue event recorded: {clue_event}")
+
+        return None

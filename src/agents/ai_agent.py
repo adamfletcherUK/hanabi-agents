@@ -298,6 +298,31 @@ class AIAgent(Agent):
         # Store the current game state for tool access
         self.current_game_state = game_state
 
+        # Check for recent tool errors and incorporate them into the decision process
+        tool_errors = self.get_tool_error_history()
+        recent_errors = []
+        if tool_errors:
+            # Get the most recent errors (up to 3)
+            recent_errors = tool_errors[-3:]
+            logger.info(
+                f"Agent {self.agent_id}: Considering {len(recent_errors)} recent tool errors in decision process")
+
+            # Add error information to the discussion summary if there are recent errors
+            if recent_errors:
+                error_explanations = [self._generate_error_explanation(
+                    error.get('error_reason', 'unknown'),
+                    error.get('action', {}).get('type', 'unknown'),
+                    error
+                ) for error in recent_errors]
+
+                error_summary = "\n\nPrevious action errors to avoid:\n" + "\n".join(
+                    f"- {explanation}" for explanation in error_explanations
+                )
+
+                discussion_summary += error_summary
+                logger.info(
+                    f"Agent {self.agent_id}: Added error information to discussion summary")
+
         # First, check if we have proposed tool calls from the discussion phase
         proposed_tool_calls = self.get_memory_from_store("proposed_tool_calls")
         if proposed_tool_calls:
@@ -309,35 +334,66 @@ class AIAgent(Agent):
             tool_name = tool_call.get("name", "")
             tool_args = tool_call.get("args", {})
 
-            # Map tool names to action types
-            if tool_name == "play_card":
-                action = {
-                    "type": "play_card",
-                    "card_index": tool_args.get("card_index", 0)
-                }
-                logger.info(
-                    f"Agent {self.agent_id}: Extracted play_card action from discussion: {action}")
-                return action
-            elif tool_name == "give_clue":
-                action = {
-                    "type": "give_clue",
-                    "target_id": tool_args.get("target_id", 0),
-                    "clue": {
-                        "type": tool_args.get("clue_type", "color"),
-                        "value": tool_args.get("clue_value", "")
+            # Check if this tool call is similar to a recent error
+            should_skip = False
+            for error in recent_errors:
+                error_action = error.get('action', {})
+                error_type = error_action.get('type', '')
+
+                if (tool_name == 'play_card' and error_type == 'play_card' and
+                        tool_args.get('card_index') == error_action.get('card_index')):
+                    logger.warning(
+                        f"Agent {self.agent_id}: Skipping proposed play_card action that recently failed")
+                    should_skip = True
+                    break
+
+                elif (tool_name == 'give_clue' and error_type == 'give_clue' and
+                      tool_args.get('target_id') == error_action.get('target_id') and
+                      tool_args.get('clue_type') == error_action.get('clue', {}).get('type') and
+                      tool_args.get('clue_value') == error_action.get('clue', {}).get('value')):
+                    logger.warning(
+                        f"Agent {self.agent_id}: Skipping proposed give_clue action that recently failed")
+                    should_skip = True
+                    break
+
+                elif (tool_name == 'discard' and error_type == 'discard' and
+                      tool_args.get('card_index') == error_action.get('card_index')):
+                    logger.warning(
+                        f"Agent {self.agent_id}: Skipping proposed discard action that recently failed")
+                    should_skip = True
+                    break
+
+            # If the proposed action is not similar to a recent error, proceed with it
+            if not should_skip:
+                # Map tool names to action types
+                if tool_name == "play_card":
+                    action = {
+                        "type": "play_card",
+                        "card_index": tool_args.get("card_index", 0)
                     }
-                }
-                logger.info(
-                    f"Agent {self.agent_id}: Extracted give_clue action from discussion: {action}")
-                return action
-            elif tool_name == "discard":
-                action = {
-                    "type": "discard",
-                    "card_index": tool_args.get("card_index", 0)
-                }
-                logger.info(
-                    f"Agent {self.agent_id}: Extracted discard action from discussion: {action}")
-                return action
+                    logger.info(
+                        f"Agent {self.agent_id}: Extracted play_card action from discussion: {action}")
+                    return action
+                elif tool_name == "give_clue":
+                    action = {
+                        "type": "give_clue",
+                        "target_id": tool_args.get("target_id", 0),
+                        "clue": {
+                            "type": tool_args.get("clue_type", "color"),
+                            "value": tool_args.get("clue_value", "")
+                        }
+                    }
+                    logger.info(
+                        f"Agent {self.agent_id}: Extracted give_clue action from discussion: {action}")
+                    return action
+                elif tool_name == "discard":
+                    action = {
+                        "type": "discard",
+                        "card_index": tool_args.get("card_index", 0)
+                    }
+                    logger.info(
+                        f"Agent {self.agent_id}: Extracted discard action from discussion: {action}")
+                    return action
 
         # If no proposed tool calls or extraction failed, fall back to the reasoning graph
         logger.info(
@@ -349,6 +405,17 @@ class AIAgent(Agent):
 
         # Explicitly set the action phase flag
         initial_state["is_action_phase"] = True
+
+        # Add tool error information to the initial state
+        if recent_errors:
+            initial_state["recent_tool_errors"] = recent_errors
+            initial_state["tool_error_explanations"] = [
+                self._generate_error_explanation(
+                    error.get('error_reason', 'unknown'),
+                    error.get('action', {}).get('type', 'unknown'),
+                    error
+                ) for error in recent_errors
+            ]
 
         # Create a thread-specific config for checkpointing
         config = {
@@ -374,6 +441,23 @@ class AIAgent(Agent):
             # Extract the action from the final state
             action = extract_action_from_state(final_state, self.agent_id)
 
+            # Check if this action is similar to a recent error
+            should_retry = False
+            for error in recent_errors:
+                error_action = error.get('action', {})
+                if self._actions_are_similar(action, error_action):
+                    logger.warning(
+                        f"Agent {self.agent_id}: Extracted action is similar to a recent error, will retry")
+                    should_retry = True
+                    break
+
+            # If the action is similar to a recent error, modify it to avoid repeating the error
+            if should_retry:
+                action = self._modify_action_to_avoid_error(
+                    action, recent_errors, game_state)
+                logger.info(
+                    f"Agent {self.agent_id}: Modified action to avoid repeating error: {action}")
+
             # Store the action in memory
             self.update_memory("last_action", action)
 
@@ -385,6 +469,150 @@ class AIAgent(Agent):
             logger.warning(
                 f"Using fallback action due to error: {fallback_action}")
             return fallback_action
+
+    def _actions_are_similar(self, action1: Dict[str, Any], action2: Dict[str, Any]) -> bool:
+        """
+        Check if two actions are similar enough to be considered the same.
+
+        Args:
+            action1: The first action
+            action2: The second action
+
+        Returns:
+            True if the actions are similar, False otherwise
+        """
+        # Check if the action types are the same
+        if action1.get('type') != action2.get('type'):
+            return False
+
+        action_type = action1.get('type')
+
+        # For play_card and discard, check if the card indices are the same
+        if action_type in ['play_card', 'discard']:
+            return action1.get('card_index') == action2.get('card_index')
+
+        # For give_clue, check if the target and clue are the same
+        elif action_type == 'give_clue':
+            clue1 = action1.get('clue', {})
+            clue2 = action2.get('clue', {})
+
+            return (action1.get('target_id') == action2.get('target_id') and
+                    clue1.get('type') == clue2.get('type') and
+                    clue1.get('value') == clue2.get('value'))
+
+        # For unknown action types, assume they're not similar
+        return False
+
+    def _modify_action_to_avoid_error(self, action: Dict[str, Any], recent_errors: List[Dict[str, Any]], game_state: GameState) -> Dict[str, Any]:
+        """
+        Modify an action to avoid repeating a recent error.
+
+        Args:
+            action: The action to modify
+            recent_errors: List of recent errors
+            game_state: The current game state
+
+        Returns:
+            A modified action that avoids the recent errors
+        """
+        action_type = action.get('type')
+
+        # For play_card, try a different card
+        if action_type == 'play_card':
+            card_index = action.get('card_index')
+            hand_size = len(game_state.hands[self.agent_id])
+
+            # Try each card index in order
+            for i in range(hand_size):
+                if i != card_index:
+                    # Check if this card index was in a recent error
+                    if not any(error.get('action', {}).get('type') == 'play_card' and
+                               error.get('action', {}).get('card_index') == i
+                               for error in recent_errors):
+                        return {'type': 'play_card', 'card_index': i}
+
+            # If all play actions would repeat errors, try discarding instead
+            if game_state.clue_tokens < game_state.max_clue_tokens:
+                return {'type': 'discard', 'card_index': 0}
+
+        # For give_clue, try a different target or clue type
+        elif action_type == 'give_clue':
+            # If we have no clue tokens, switch to discard
+            if game_state.clue_tokens <= 0:
+                return {'type': 'discard', 'card_index': 0}
+
+            target_id = action.get('target_id')
+            clue = action.get('clue', {})
+            clue_type = clue.get('type')
+            clue_value = clue.get('value')
+
+            # Try different targets
+            for i in range(len(game_state.hands)):
+                if i != self.agent_id and i != target_id:
+                    # Try color clues
+                    if clue_type != 'color' or clue_value != 'red':
+                        # Check if any cards match this clue
+                        for card_idx, card in enumerate(game_state.hands[i]):
+                            if card.color.value == 'red':
+                                return {
+                                    'type': 'give_clue',
+                                    'target_id': i,
+                                    'clue': {'type': 'color', 'value': 'red'}
+                                }
+
+                    # Try number clues
+                    for num in range(1, 6):
+                        if clue_type != 'number' or clue_value != num:
+                            # Check if any cards match this clue
+                            for card_idx, card in enumerate(game_state.hands[i]):
+                                if card.number == num:
+                                    return {
+                                        'type': 'give_clue',
+                                        'target_id': i,
+                                        'clue': {'type': 'number', 'value': num}
+                                    }
+
+            # If no valid clue found, try discarding
+            if game_state.clue_tokens < game_state.max_clue_tokens:
+                return {'type': 'discard', 'card_index': 0}
+
+        # For discard, try a different card
+        elif action_type == 'discard':
+            # If clue tokens are at max, try playing a card instead
+            if game_state.clue_tokens >= game_state.max_clue_tokens:
+                return {'type': 'play_card', 'card_index': 0}
+
+            card_index = action.get('card_index')
+            hand_size = len(game_state.hands[self.agent_id])
+
+            # Try each card index in order
+            for i in range(hand_size):
+                if i != card_index:
+                    # Check if this card index was in a recent error
+                    if not any(error.get('action', {}).get('type') == 'discard' and
+                               error.get('action', {}).get('card_index') == i
+                               for error in recent_errors):
+                        return {'type': 'discard', 'card_index': i}
+
+            # If all discard actions would repeat errors, try giving a clue instead
+            if game_state.clue_tokens > 0:
+                # Find a target that's not ourselves
+                for i in range(len(game_state.hands)):
+                    if i != self.agent_id:
+                        # Try a color clue
+                        for color in ['red', 'green', 'blue', 'white', 'yellow']:
+                            # Check if any cards match this clue
+                            for card_idx, card in enumerate(game_state.hands[i]):
+                                if card.color.value == color:
+                                    return {
+                                        'type': 'give_clue',
+                                        'target_id': i,
+                                        'clue': {'type': 'color', 'value': color}
+                                    }
+
+        # If we couldn't find a good alternative, return the original action
+        # (the game engine will handle the error)
+        return action
 
     def get_reasoning_history(self, phase="action", limit=5):
         """Retrieve the agent's reasoning history from checkpoints."""
@@ -426,15 +654,20 @@ class AIAgent(Agent):
                     results = store.search(namespace, query=query, limit=5)
                     return [item.value for item in results]
                 except AttributeError:
-                    # If search is not available, fall back to list
+                    # If search is not available, fall back to get method
                     logger.warning(
-                        "Search not available in store, falling back to list")
+                        "Search not available in store, falling back to direct memory access")
+                    return self.memory.get(key, [])
+            else:
+                # Try to list all items in the namespace
+                try:
                     items = store.list(namespace)
                     return [item.value for item in items]
-            else:
-                # List all items in the namespace
-                items = store.list(namespace)
-                return [item.value for item in items]
+                except AttributeError:
+                    # If list is not available, fall back to direct memory access
+                    logger.warning(
+                        "List not available in store, falling back to direct memory access")
+                    return self.memory.get(key, [])
         except Exception as e:
             logger.error(
                 f"Error retrieving from memory store for Agent {self.agent_id}: {e}")
@@ -639,6 +872,92 @@ class AIAgent(Agent):
             "tool_error": str(error)  # Store the error for reference
         }
 
+    def notify_incorrect_tool_usage(self, error_record: Dict[str, Any]) -> None:
+        """
+        Enhanced notification of incorrect tool usage for AI agents.
+
+        This method overrides the base Agent implementation to provide more
+        sophisticated handling of tool errors for AI agents.
+
+        Args:
+            error_record: A dictionary containing information about the error
+        """
+        # Call the parent implementation to store the error in memory
+        super().notify_incorrect_tool_usage(error_record)
+
+        # Log the error
+        logger.warning(
+            f"AI Agent {self.agent_id} notified of incorrect tool usage: {error_record['error_message']}")
+
+        # Create a human-readable explanation of the error
+        error_reason = error_record.get('error_reason', 'unknown')
+        action_type = error_record.get('action', {}).get('type', 'unknown')
+
+        explanation = self._generate_error_explanation(
+            error_reason, action_type, error_record)
+
+        # Store the explanation in memory for future reference
+        self.memory["last_tool_error_explanation"] = explanation
+
+        # If we have a reasoning graph, add the error to the current thoughts
+        if hasattr(self, 'current_thoughts'):
+            self.current_thoughts.append(f"ERROR: {explanation}")
+
+    def _generate_error_explanation(self, error_reason: str, action_type: str, error_record: Dict[str, Any]) -> str:
+        """
+        Generate a human-readable explanation of a tool error.
+
+        Args:
+            error_reason: The machine-readable error reason code
+            action_type: The type of action that caused the error
+            error_record: The complete error record
+
+        Returns:
+            A human-readable explanation of the error
+        """
+        # Common error explanations
+        explanations = {
+            # Clue errors
+            "no_clue_tokens": "I cannot give a clue because there are no clue tokens available. I should consider discarding a card to gain a clue token.",
+            "self_clue": "I cannot give a clue to myself. I must select another player as the target.",
+            "invalid_clue_format": "The clue format was invalid. Clues must be either color (red, green, blue, white, yellow) or number (1-5).",
+            "no_affected_cards": "The clue I tried to give wouldn't affect any cards in the target player's hand. Clues must match at least one card.",
+
+            # Play errors
+            "invalid_card_index": "The card index I specified is invalid. I must choose a valid index within my hand.",
+
+            # Discard errors
+            "max_clue_tokens": "I cannot discard when clue tokens are at maximum. I should use a clue token first.",
+
+            # General errors
+            "unknown_action_type": "I attempted an unknown action type. Valid actions are 'play_card', 'give_clue', and 'discard'.",
+            "exception": "An unexpected error occurred while executing the action."
+        }
+
+        # Get the explanation for the specific error reason, or a generic one if not found
+        explanation = explanations.get(
+            error_reason, f"An error occurred with the {action_type} action: {error_record['error_message']}")
+
+        # Add action-specific details
+        if action_type == "give_clue":
+            clue = error_record.get('action', {}).get('clue', {})
+            target_id = error_record.get('action', {}).get('target_id')
+            explanation += f" (Attempted to give a {clue.get('type')} clue with value {clue.get('value')} to player {target_id})"
+        elif action_type == "play_card" or action_type == "discard":
+            card_index = error_record.get('action', {}).get('card_index')
+            explanation += f" (Attempted to {action_type.replace('_', ' ')} card at index {card_index})"
+
+        return explanation
+
+    def get_tool_error_history(self) -> List[Dict[str, Any]]:
+        """
+        Get the agent's history of tool errors.
+
+        Returns:
+            A list of error records, or an empty list if none exist
+        """
+        return self.memory.get("tool_errors", [])
+
     def _setup_reasoning_graph(self):
         """Set up the reasoning graph for the agent."""
         # Create the reasoning graph
@@ -804,9 +1123,13 @@ class AIAgent(Agent):
             discussion_history = state["discussion_history"]
             current_thoughts = state.get("current_thoughts", [])
 
+            # Check for recent tool errors
+            recent_tool_errors = state.get("recent_tool_errors", [])
+            tool_error_explanations = state.get("tool_error_explanations", [])
+
             # Create the prompt
             prompt = self._create_thought_generation_prompt(
-                game_state, discussion_history, current_thoughts)
+                game_state, discussion_history, current_thoughts, tool_error_explanations)
 
             # Generate thoughts using the LLM
             response = self.model.invoke([HumanMessage(content=prompt)])
@@ -832,6 +1155,52 @@ class AIAgent(Agent):
         except Exception as e:
             logger.error(f"Error generating thoughts: {e}")
             return state
+
+    def _create_thought_generation_prompt(self, game_state, discussion_history, current_thoughts, tool_error_explanations=None):
+        """Create a prompt for generating thoughts about the game state."""
+        # Format the game state for the prompt
+        game_state_str = self._format_game_state_for_prompt(game_state)
+
+        # Format the discussion history
+        discussion_str = "\n".join(
+            discussion_history) if discussion_history else "No discussion yet."
+
+        # Format current thoughts
+        thoughts_str = "\n".join(
+            current_thoughts) if current_thoughts else "No thoughts yet."
+
+        # Format tool error explanations if available
+        error_str = ""
+        if tool_error_explanations and len(tool_error_explanations) > 0:
+            error_str = "\n\nRECENT ACTION ERRORS TO AVOID:\n" + "\n".join(
+                f"- {explanation}" for explanation in tool_error_explanations
+            )
+
+        # Create the prompt
+        prompt = f"""
+You are Player {self.agent_id} in a game of Hanabi. Think through the current game state and what action you should take.
+
+GAME STATE:
+{game_state_str}
+
+DISCUSSION HISTORY:
+{discussion_str}
+
+YOUR PREVIOUS THOUGHTS:
+{thoughts_str}{error_str}
+
+Think step by step about the current game state. Consider:
+1. What information do you have about your own hand from clues?
+2. What information do you have about other players' hands?
+3. What cards are in the discard pile and what does that tell you?
+4. What is the current state of the firework piles?
+5. How many clue tokens and fuse tokens are left?
+6. What action would be most beneficial right now?
+
+YOUR NEW THOUGHTS:
+"""
+
+        return prompt
 
     def _propose_action(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -954,3 +1323,80 @@ class AIAgent(Agent):
                 "type": "discard",
                 "card_index": 0
             }
+
+    def _format_game_state_for_prompt(self, game_state):
+        """Format the game state for inclusion in a prompt."""
+        # Get the player's view of the game state
+        player_view = game_state.get_view_for(self.agent_id)
+
+        # Format firework piles
+        firework_str = []
+        for color, pile in player_view.firework_piles.items():
+            if pile:
+                top_card = pile[-1].number
+                firework_str.append(f"{color.value}: {top_card}")
+            else:
+                firework_str.append(f"{color.value}: empty")
+
+        firework_summary = ", ".join(firework_str)
+
+        # Format player hands
+        hand_str = []
+        for player_id, hand in player_view.hands.items():
+            if player_id == self.agent_id:
+                # For the player's own hand, show clue information
+                cards = []
+                for i, card in enumerate(hand):
+                    # For the player's own view, we hide the actual card values
+                    card_info = f"Card {i}: [HIDDEN]"
+
+                    # Add clue information if available
+                    clues = []
+                    if hasattr(card, 'color_clued') and card.color_clued:
+                        clues.append(f"color: {card.color.value}")
+                    if hasattr(card, 'number_clued') and card.number_clued:
+                        clues.append(f"number: {card.number}")
+
+                    if clues:
+                        card_info += f" ({', '.join(clues)})"
+
+                    cards.append(card_info)
+
+                hand_str.append(
+                    f"Your hand (Player {player_id}): {', '.join(cards)}")
+            else:
+                # For other players' hands, show the actual cards
+                cards = [
+                    f"Card {i}: {card.color.value} {card.number}" for i, card in enumerate(hand)]
+                hand_str.append(
+                    f"Player {player_id}'s hand: {', '.join(cards)}")
+
+        hand_summary = "\n".join(hand_str)
+
+        # Format discard pile
+        discard_summary = {}
+        for card in player_view.discard_pile:
+            key = f"{card.color.value} {card.number}"
+            discard_summary[key] = discard_summary.get(key, 0) + 1
+
+        discard_str = [f"{card}: {count}" for card,
+                       count in discard_summary.items()]
+        discard_summary = ", ".join(discard_str) if discard_str else "empty"
+
+        # Format game status
+        game_status = f"""
+Current player: Player {player_view.current_player}
+Turn count: {player_view.turn_count}
+Clue tokens: {player_view.clue_tokens}/{player_view.max_clue_tokens}
+Fuse tokens: {player_view.fuse_tokens}/{player_view.max_fuse_tokens}
+Deck size: {len(player_view.deck)}
+Score: {player_view.score}
+
+Firework piles: {firework_summary}
+
+{hand_summary}
+
+Discard pile: {discard_summary}
+"""
+
+        return game_status

@@ -82,14 +82,17 @@ def generate_active_player_contribution(
         return "I'm analyzing the game state and considering our options."
 
     # Create a prompt for generating a contribution with clear action proposal
-    prompt = f"""You are Agent {agent_id} in a game of Hanabi, and it's your turn to propose an action.
+    prompt = f"""You are Agent {agent_id} in a game of Hanabi, and it's your turn to take an action.
 
 Based on your analysis of the game state, you need to clearly state:
-1. The specific action you propose to take (play a card, give a clue, or discard)
-2. Your detailed reasoning for this action
+1. The specific action you will take (play a card, give a clue, or discard)
+2. Your detailed reasoning for this action, including:
+   - What you know about the current game state
+   - Why this action is optimal compared to alternatives
+   - How this action contributes to the team's strategy
 
 PROPOSED ACTION FORMAT:
-- Start with "I propose to [action]..." where [action] is one of:
+- Start with "I will [action]..." where [action] is one of:
   * "play card [index]" (e.g., "play card 2")
   * "give a [color/number] clue to Player [id]" (e.g., "give a red clue to Player 3")
   * "discard card [index]" (e.g., "discard card 0")
@@ -99,11 +102,12 @@ REASONING FORMAT:
 - Distinguish between KNOWN information (from clues) and INFERENCES (educated guesses)
 - Use "I know" only for information directly given through clues
 - Use "I believe/infer/think" for inferences
+- Consider the current state of the fireworks, available clue tokens, and what other players might need
 
 Your thoughts:
 {format_thoughts(current_thoughts)}
 
-Generate a clear, strategic proposal that follows the format above. Be specific about your proposed action and provide detailed reasoning.
+Generate a clear, strategic proposal that follows the format above. Be specific about your proposed action and provide detailed reasoning that shows your strategic thinking.
 """
 
     # Generate the contribution

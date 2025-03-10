@@ -25,3 +25,22 @@ class Agent(ABC):
     def get_memory(self, key: str) -> Any:
         """Retrieve information from the agent's internal memory."""
         return self.memory.get(key)
+
+    def notify_incorrect_tool_usage(self, error_record: Dict[str, Any]) -> None:
+        """
+        Notify the agent of incorrect tool usage.
+
+        This method is called by the game engine when the agent attempts to use a tool incorrectly.
+        The default implementation stores the error in the agent's memory.
+        Subclasses can override this method to provide more sophisticated handling.
+
+        Args:
+            error_record: A dictionary containing information about the error
+        """
+        # Store the error in the agent's memory
+        tool_errors = self.memory.get("tool_errors", [])
+        tool_errors.append(error_record)
+        self.memory["tool_errors"] = tool_errors
+
+        # Store the most recent error separately for easy access
+        self.memory["last_tool_error"] = error_record

@@ -5,6 +5,7 @@ from typing import List, Dict, Any
 from .state import GameState, Card, Color
 from ..agents.base import Agent
 from ..communication.discussion import DiscussionManager
+import datetime
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -20,6 +21,10 @@ class GameEngine:
         # Track the last action and its result
         self.last_action = None
         self.last_action_result = None
+        # Track incorrect tool usage
+        self.incorrect_tool_usage = {}
+        for i in range(len(agents)):
+            self.incorrect_tool_usage[i] = []
         logger.info("Game engine initialized successfully")
 
     def _setup_logging(self):
@@ -118,28 +123,65 @@ class GameEngine:
             # Store the action for reference
             self.last_action = action
         except Exception as e:
-            self.logger.critical(
-                f"CRITICAL ERROR: Agent {active_agent_id} failed to propose a valid action: {e}")
-            self.logger.critical("Game terminated due to critical error")
-            self.state.game_over = True
-            raise RuntimeError(f"Game terminated due to critical error: {e}")
+            self.logger.error(
+                f"Agent {active_agent_id} failed to propose a valid action: {e}")
+
+            # Create a fallback action instead of terminating the game
+            try:
+                # Try to create a simple fallback action
+                if self.state.clue_tokens > 0:
+                    # Find a player to give a clue to
+                    target_id = (active_agent_id + 1) % len(self.agents)
+                    action = {
+                        "type": "give_clue",
+                        "target_id": target_id,
+                        "clue": {
+                            "type": "color",
+                            "value": "red"  # Default to red as a common color
+                        }
+                    }
+                else:
+                    # If no clue tokens, discard the first card
+                    action = {
+                        "type": "discard",
+                        "card_index": 0
+                    }
+
+                self.logger.warning(f"Using fallback action: {action}")
+                self.last_action = action
+            except Exception as fallback_error:
+                self.logger.critical(
+                    f"CRITICAL ERROR: Failed to create fallback action: {fallback_error}")
+                self.logger.critical("Game terminated due to critical error")
+                self.state.game_over = True
+                raise RuntimeError(
+                    f"Game terminated due to critical error: {e}, fallback error: {fallback_error}")
 
         # Validate and execute action
         if self.execute_action(active_agent.agent_id, action):
             self._update_game_state()
+            return True
         else:
             self.logger.error(
-                f"Invalid action attempted by Agent {active_agent.agent_id}")
-            self.logger.critical("Game terminated due to invalid action")
-            self.state.game_over = True
-            raise RuntimeError(
-                f"Game terminated due to invalid action: {action}")
+                f"Invalid action attempted by Agent {active_agent.agent_id}: {action}")
+
+            # Track the invalid action in the agent's error history
+            error_message = f"Invalid action: {action}"
+            error_reason = "invalid_action_format"
+            self._track_incorrect_tool_usage(
+                active_agent.agent_id, action, error_message, error_reason)
+
+            # Instead of terminating, return False to indicate failure
+            return False
 
     def execute_action(self, agent_id: int, action: Dict[str, Any]) -> bool:
         """Execute an action for the given agent."""
         logger.info(f"Executing action for agent {agent_id}: {action}")
         logger.debug(
             f"Before action - Current player: {self.state.current_player}, Turn count: {self.state.turn_count}")
+
+        # Store the action for reference
+        self.last_action = action
 
         # Validate the action
         try:
@@ -161,10 +203,13 @@ class GameEngine:
                     # Check specific clue errors
                     if self.state.clue_tokens <= 0:
                         error_message += " (No clue tokens available)"
+                        error_reason = "no_clue_tokens"
                     elif target_id == agent_id:
                         error_message += " (Cannot give clue to yourself)"
+                        error_reason = "self_clue"
                     elif not self._validate_clue(clue):
                         error_message += " (Invalid clue format)"
+                        error_reason = "invalid_clue_format"
                     else:
                         # Check if the clue would affect any cards
                         affected_cards = []
@@ -174,6 +219,9 @@ class GameEngine:
 
                         if not affected_cards:
                             error_message += " (Clue would not affect any cards)"
+                            error_reason = "no_affected_cards"
+                        else:
+                            error_reason = "unknown_clue_error"
 
                 elif action_type == "play_card":
                     card_index = action.get("card_index")
@@ -182,6 +230,9 @@ class GameEngine:
                     # Check specific play errors
                     if card_index is None or card_index < 0 or card_index >= len(self.state.hands[agent_id]):
                         error_message += f" (Invalid card index, hand size: {len(self.state.hands[agent_id])})"
+                        error_reason = "invalid_card_index"
+                    else:
+                        error_reason = "unknown_play_error"
 
                 elif action_type == "discard":
                     card_index = action.get("card_index")
@@ -190,10 +241,21 @@ class GameEngine:
                     # Check specific discard errors
                     if self.state.clue_tokens >= self.state.max_clue_tokens:
                         error_message += " (Cannot discard when clue tokens are at maximum)"
+                        error_reason = "max_clue_tokens"
                     elif card_index is None or card_index < 0 or card_index >= len(self.state.hands[agent_id]):
                         error_message += f" (Invalid card index, hand size: {len(self.state.hands[agent_id])})"
+                        error_reason = "invalid_card_index"
+                    else:
+                        error_reason = "unknown_discard_error"
+                else:
+                    error_reason = "unknown_action_type"
 
                 logger.error(error_message)
+
+                # Track the incorrect tool usage
+                self._track_incorrect_tool_usage(
+                    agent_id, action, error_message, error_reason)
+
                 return False
 
             # Execute the action based on its type
@@ -212,6 +274,8 @@ class GameEngine:
                 result = self._execute_discard(agent_id, card_index)
             else:
                 logger.error(f"Unknown action type: {action_type}")
+                self._track_incorrect_tool_usage(
+                    agent_id, action, f"Unknown action type: {action_type}", "unknown_action_type")
                 return False
 
             # Store the action result
@@ -227,6 +291,8 @@ class GameEngine:
             return True
         except Exception as e:
             logger.error(f"Error executing action: {e}")
+            self._track_incorrect_tool_usage(
+                agent_id, action, f"Error executing action: {e}", "exception")
             return False
 
     def _execute_play_card(self, agent_id: int, card_index: int) -> bool:
@@ -340,8 +406,12 @@ class GameEngine:
             f"Agent {agent_id} gave clue to Agent {target_id}: {clue_type}={clue_value}, affecting positions {affected_cards}")
 
         # Track the clue in game history
-        self.state.add_clue_event(
-            agent_id, target_id, clue_type, clue_value, affected_cards)
+        try:
+            self.state.add_clue_event(
+                agent_id, target_id, clue_type, clue_value, affected_cards)
+        except Exception as e:
+            logger.error(f"Error tracking clue event: {e}")
+            # Continue execution even if tracking fails
 
         # Return the result
         return {
@@ -447,3 +517,53 @@ class GameEngine:
             "current_player": self.state.current_player,
             "players_count": len(self.agents)
         }
+
+    def _track_incorrect_tool_usage(self, agent_id: int, action: Dict[str, Any], error_message: str, error_reason: str) -> None:
+        """
+        Track incorrect tool usage by an agent.
+
+        Args:
+            agent_id: The ID of the agent that made the incorrect action
+            action: The action that was attempted
+            error_message: A human-readable error message
+            error_reason: A machine-readable error reason code
+        """
+        # Create an error record
+        error_record = {
+            "turn": self.state.turn_count,
+            "action": action,
+            "error_message": error_message,
+            "error_reason": error_reason,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+
+        # Add to the agent's error history
+        self.incorrect_tool_usage[agent_id].append(error_record)
+
+        # Log the error
+        logger.warning(
+            f"Incorrect tool usage by Agent {agent_id}: {error_message}")
+
+        # Notify the agent of the error if possible
+        try:
+            agent = self.agents[agent_id]
+            if hasattr(agent, 'notify_incorrect_tool_usage') and callable(getattr(agent, 'notify_incorrect_tool_usage')):
+                agent.notify_incorrect_tool_usage(error_record)
+        except Exception as e:
+            logger.error(
+                f"Failed to notify agent {agent_id} of incorrect tool usage: {e}")
+
+    def get_incorrect_tool_usage(self, agent_id: int = None) -> Dict[int, List[Dict[str, Any]]]:
+        """
+        Get the history of incorrect tool usage.
+
+        Args:
+            agent_id: Optional agent ID to filter by
+
+        Returns:
+            Dictionary mapping agent IDs to lists of error records,
+            or a single list if agent_id is specified
+        """
+        if agent_id is not None:
+            return self.incorrect_tool_usage.get(agent_id, [])
+        return self.incorrect_tool_usage

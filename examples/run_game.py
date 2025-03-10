@@ -188,6 +188,53 @@ def log_game_status(engine):
     logger.info("=" * 50)
 
 
+def log_incorrect_tool_usage(engine):
+    """Log information about incorrect tool usage by agents."""
+    incorrect_usage = engine.get_incorrect_tool_usage()
+
+    if not any(incorrect_usage.values()):
+        return  # No incorrect tool usage to log
+
+    logger.info("=" * 50)
+    logger.info("⚠️ INCORRECT TOOL USAGE SUMMARY ⚠️")
+
+    for agent_id, errors in incorrect_usage.items():
+        if not errors:
+            continue
+
+        logger.info(
+            f"Agent {agent_id} has made {len(errors)} incorrect tool uses:")
+
+        # Group errors by type
+        error_types = {}
+        for error in errors:
+            action_type = error.get('action', {}).get('type', 'unknown')
+            error_reason = error.get('error_reason', 'unknown')
+            key = f"{action_type}:{error_reason}"
+
+            if key not in error_types:
+                error_types[key] = 0
+            error_types[key] += 1
+
+        # Log summary of error types
+        for key, count in error_types.items():
+            action_type, error_reason = key.split(':')
+            logger.info(f"  - {count}x {action_type} errors ({error_reason})")
+
+        # Log the most recent error in detail
+        if errors:
+            most_recent = errors[-1]
+            action = most_recent.get('action', {})
+            error_message = most_recent.get('error_message', 'Unknown error')
+
+            logger.info(
+                f"  Most recent error (turn {most_recent.get('turn', '?')}):")
+            logger.info(f"  Action: {action}")
+            logger.info(f"  Error: {error_message}")
+
+    logger.info("=" * 50)
+
+
 def run_game():
     """Run a complete game with AI agents."""
     logger.info("=" * 50)
@@ -212,7 +259,8 @@ def run_game():
     try:
         agents = [AIAgent(agent_id=i) for i in range(5)]
         engine = GameEngine(agents=agents)
-        discussion_manager = DiscussionManager(max_rounds=3)
+        discussion_manager = DiscussionManager(
+            max_rounds=1)  # Only one round needed now
         logger.info(f"Game initialized with {len(agents)} agents")
     except Exception as e:
         logger.error(f"Error initializing game components: {e}")
@@ -238,99 +286,70 @@ def run_game():
             # Log detailed game state at the start of each turn
             log_detailed_game_state(engine)
 
-            # Start new discussion
-            logger.info("📣 ----- DISCUSSION PHASE BEGINS ----- 📣")
+            # Log incorrect tool usage information
+            log_incorrect_tool_usage(engine)
+
+            # Start new discussion - now just for the active player to rationalize their action
+            logger.info("🧠 ----- REASONING PHASE BEGINS ----- 🧠")
             discussion_manager.start_new_discussion()
 
-            # First, the active player proposes an action
+            # The active player proposes and rationalizes their action
             current_agent = agents[current_player]
             game_view = engine.state.get_view_for(current_player)
 
             logger.info(
-                f"🎯 Active Player {current_player} is proposing an action")
+                f"🎯 Player {current_player} is analyzing the game state")
             try:
-                # Get the active player's initial proposal with clear action and reasoning
-                initial_proposal = current_agent.participate_in_discussion(
+                # Get the active player's proposal with clear action and reasoning
+                action_proposal = current_agent.participate_in_discussion(
                     game_view,
                     discussion_manager.get_game_history(last_n_turns=3),
                     is_active_player=True  # Indicate this is the active player
                 )
                 logger.info(
-                    f"💡 Player {current_player} proposes: {initial_proposal}")
-                # Add the proposal to the discussion history BEFORE requesting feedback
+                    f"💡 Player {current_player} proposes: {action_proposal}")
+                # Add the proposal to the discussion history
                 discussion_manager.add_contribution(
-                    current_player, initial_proposal)
+                    current_player, action_proposal)
             except Exception as e:
                 logger.error(
                     f"Error getting proposal from Player {current_player}: {e}")
-                initial_proposal = "I propose to give a number clue to help identify playable 1s because this is the safest way to make progress at this stage."
+                action_proposal = "I propose to give a number clue to help identify playable 1s because this is the safest way to make progress at this stage."
                 discussion_manager.add_contribution(
-                    current_player, initial_proposal)
+                    current_player, action_proposal)
 
-            # Select 2-3 other agents to provide feedback
-            # We'll use a simple strategy: pick agents that are 1, 2, and sometimes 3 positions ahead
-            num_agents = len(agents)
-            feedback_agents = [(current_player + i) %
-                               num_agents for i in range(1, min(4, num_agents))]
+            logger.info("🧠 ----- REASONING PHASE ENDS ----- 🧠")
 
-            # For the first player, we'll only get feedback from 2 agents to keep things moving
-            if current_player == 0:
-                feedback_agents = feedback_agents[:2]
+            # Get the reasoning summary
+            reasoning_summary = discussion_manager.get_discussion_summary()
+            logger.info(f"📝 Reasoning summary: {reasoning_summary}")
 
-            logger.info(
-                f"👥 Requesting feedback from agents: {feedback_agents}")
-
-            # Get feedback from each selected agent
-            for feedback_agent_id in feedback_agents:
-                logger.info(
-                    f"🔄 Getting feedback from Agent {feedback_agent_id}")
-                feedback_agent = agents[feedback_agent_id]
-                feedback_view = engine.state.get_view_for(feedback_agent_id)
-
-                try:
-                    # Get yes/no feedback on the active player's proposal
-                    feedback = feedback_agent.participate_in_discussion(
-                        feedback_view,
-                        discussion_manager.get_discussion_history(),
-                        is_active_player=False,  # This is a feedback agent
-                        active_player_proposal=initial_proposal  # Pass the active player's proposal
-                    )
-                    logger.info(
-                        f"💬 Agent {feedback_agent_id} says: {feedback}")
-                    discussion_manager.add_contribution(
-                        feedback_agent_id, feedback)
-                except Exception as e:
-                    logger.error(
-                        f"Error getting feedback from Agent {feedback_agent_id}: {e}")
-                    feedback = "I agree with the proposal because it helps us identify playable cards safely."
-                    discussion_manager.add_contribution(
-                        feedback_agent_id, feedback)
-
-            logger.info("📣 ----- DISCUSSION PHASE ENDS ----- 📣")
-
-            # Get the discussion summary from the pre-action phase
-            pre_action_discussion_summary = discussion_manager.get_discussion_summary()
-            logger.info(
-                f"📝 Discussion summary: {pre_action_discussion_summary}")
-
-            # Action phase - Direct action without additional feedback
+            # Action phase - Direct action without feedback
             logger.info("🎬 ----- ACTION PHASE BEGINS ----- 🎬")
-            logger.info(f"⚡ Agent {current_player} is executing action")
+            logger.info(f"⚡ Player {current_player} is executing action")
 
             # The active agent directly executes the action
             game_view = engine.state.get_view_for(current_player)
 
             try:
-                # Pass the pre-action discussion summary to the engine's _play_turn method
-                engine.pre_action_discussion_summary = pre_action_discussion_summary
+                # Pass the reasoning summary to the engine's _play_turn method
+                engine.pre_action_discussion_summary = reasoning_summary
 
                 # Store the current state for comparison
                 prev_score = engine.state.score
                 prev_clue_tokens = engine.state.clue_tokens
                 prev_fuse_tokens = engine.state.fuse_tokens
 
-                # This will raise an exception if the agent fails to propose a valid action
-                engine._play_turn()
+                # This will return False if the agent fails to propose a valid action
+                turn_success = engine._play_turn()
+
+                if not turn_success:
+                    logger.warning(
+                        f"Player {current_player}'s turn failed. Moving to next player.")
+                    # Log the incorrect tool usage
+                    log_incorrect_tool_usage(engine)
+                    # Skip the rest of this iteration and continue with the next player
+                    continue
 
                 # Log the action result
                 if hasattr(engine, 'last_action') and hasattr(engine, 'last_action_result'):
@@ -352,11 +371,49 @@ def run_game():
 
                 # Log the updated game status
                 log_game_status(engine)
+            except RuntimeError as e:
+                # Handle game termination errors more gracefully
+                error_message = str(e)
+                logger.critical(f"Error during action phase: {error_message}")
 
+                # Check if this is an invalid action error
+                if "invalid action" in error_message.lower():
+                    # Extract the action from the error message if possible
+                    action_str = error_message.split(
+                        "invalid action:")[-1].strip() if "invalid action:" in error_message else "unknown"
+
+                    # Log the error and continue with the next player if possible
+                    logger.error(
+                        f"Invalid action attempted by Player {current_player}: {action_str}")
+                    logger.info(
+                        "Attempting to continue the game with the next player...")
+
+                    # Advance to the next player manually
+                    engine.state.current_player = (
+                        engine.state.current_player + 1) % len(engine.agents)
+                    engine.state.turn_count += 1
+
+                    # Log the recovery attempt
+                    logger.info(
+                        f"Recovered from error. Next player: {engine.state.current_player}")
+
+                    # Continue the game loop
+                    continue
+                else:
+                    # For other runtime errors, log and terminate
+                    logger.critical(
+                        f"Game terminated due to critical error: {error_message}")
+                    logger.critical(f"Stack trace: ", exc_info=True)
+                    print(
+                        f"\n*** CRITICAL ERROR: Game terminated ***\n{error_message}\n")
+                    break
             except Exception as e:
-                # The exception will be caught by the outer try-except block
-                logger.critical(f"Error during action phase: {e}")
-                raise
+                # Handle other exceptions
+                logger.critical(f"Unexpected error during action phase: {e}")
+                logger.critical("Stack trace: ", exc_info=True)
+                print(
+                    f"\n*** CRITICAL ERROR: Game terminated due to unexpected error ***\n{e}\n")
+                break
 
             # Check game over conditions
             if engine.state.fuse_tokens <= 0:
@@ -419,6 +476,13 @@ def run_game():
                 f"\nAgent {agent.agent_id} Learning Summary:\n{learning_summary}")
     except Exception as e:
         logger.error(f"Error storing game outcomes: {e}")
+
+    # Log final incorrect tool usage summary
+    log_incorrect_tool_usage(engine)
+
+    logger.info("=" * 50)
+    logger.info(f"🎮 GAME OVER! FINAL SCORE: {engine.state.score} 🎮")
+    logger.info("=" * 50)
 
 
 if __name__ == "__main__":
