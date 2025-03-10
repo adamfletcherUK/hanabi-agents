@@ -163,6 +163,11 @@ def generate_thoughts(
     thoughts = _extract_thoughts(response.content)
     new_state["current_thoughts"] = thoughts
 
+    # Log the extracted thoughts
+    logger.info(f"Extracted thoughts for agent {agent_id}:")
+    for i, thought in enumerate(thoughts):
+        logger.info(f"  Thought {i+1}: {thought}")
+
     return new_state
 
 
@@ -222,7 +227,52 @@ def propose_action(
 
     # Get any errors from previous actions
     errors = new_state.get("errors", [])
-    recent_errors = errors[-3:] if errors else []
+
+    # Get action errors from memory if available
+    action_errors = []
+    if config and "agent_instance" in config:
+        agent = config["agent_instance"]
+        if hasattr(agent, "get_memory_from_store"):
+            action_errors = agent.get_memory_from_store("action_errors", [])
+            if action_errors:
+                logger.info(
+                    f"Retrieved {len(action_errors)} action errors from memory")
+
+    # Combine errors from state and memory
+    recent_errors = []
+
+    # Add errors from state
+    if errors:
+        recent_errors.extend(errors[-3:])
+
+    # Add errors from memory
+    if action_errors:
+        # Convert memory error format to the format expected by the prompt
+        for error in action_errors[-3:]:
+            action_type = error.get("action", {}).get("type", "unknown")
+            error_message = error.get("error", "Unknown error")
+
+            # Create a structured error record
+            error_record = {
+                "action_type": action_type,
+                "guidance": f"Previous attempt failed: {error_message}. Avoid this exact action."
+            }
+
+            # Add specific guidance for clue errors
+            if action_type == "give_clue":
+                clue = error.get("action", {}).get("clue", {})
+                target_id = error.get("action", {}).get("target_id")
+                if "no_affected_cards" in error_message or "wouldn't affect any cards" in error_message:
+                    error_record["guidance"] = f"Clue {clue.get('type')}={clue.get('value')} to Player {target_id} failed because it doesn't affect any cards in their hand. Check their hand carefully before giving clues."
+
+            recent_errors.append(error_record)
+
+    # Limit to most recent 3 errors to avoid overwhelming the prompt
+    recent_errors = recent_errors[-3:]
+
+    if recent_errors:
+        logger.info(
+            f"Including {len(recent_errors)} recent errors in action proposal prompt")
 
     # Create the prompt
     prompt = create_action_proposal_prompt(
@@ -246,9 +296,43 @@ def propose_action(
     messages.append(response)
     new_state["messages"] = messages
 
-    # Extract the proposed action from the response
-    proposed_action = _extract_action(response.content)
-    new_state["proposed_action"] = proposed_action
+    # Log the tool calls if present
+    if hasattr(response, "tool_calls") and response.tool_calls:
+        logger.info(f"Model proposed tool calls: {response.tool_calls}")
+
+        # Store the tool calls in the state for reference
+        new_state["proposed_tool_calls"] = response.tool_calls
+
+        # Extract the first tool call for backward compatibility
+        first_tool_call = response.tool_calls[0]
+        tool_name = first_tool_call.get("name")
+        tool_args = first_tool_call.get("args", {})
+
+        # Map tool names to action types
+        action_type_map = {
+            "play_card": "play",
+            "give_clue": "clue",
+            "discard": "discard"
+        }
+
+        # Create a proposed action in the old format for backward compatibility
+        proposed_action = {
+            "action_type": action_type_map.get(tool_name, "unknown")
+        }
+
+        # Add tool-specific arguments
+        if tool_name == "play_card" or tool_name == "discard":
+            proposed_action["card_index"] = tool_args.get("card_index")
+        elif tool_name == "give_clue":
+            proposed_action["target_id"] = tool_args.get("target_id")
+            proposed_action["clue_type"] = tool_args.get("clue_type")
+            proposed_action["clue_value"] = tool_args.get("clue_value")
+
+        # Store the proposed action in the state
+        new_state["proposed_action"] = proposed_action
+    else:
+        logger.warning("No tool calls found in model response")
+        new_state["proposed_action"] = None
 
     return new_state
 
@@ -289,72 +373,3 @@ def _extract_thoughts(content: str) -> List[str]:
         thoughts = [content.strip()]
 
     return thoughts
-
-
-def _extract_action(content: str) -> Optional[Dict[str, Any]]:
-    """
-    Extract the proposed action from the model's response.
-
-    Args:
-        content: Content of the model's response
-
-    Returns:
-        Dictionary representing the proposed action, or None if no action was found
-    """
-    # Look for play action
-    if "play" in content.lower():
-        # Look for card index
-        import re
-        card_index_match = re.search(
-            r"card(?:\sat)?\s+(?:index\s+)?(\d+)", content.lower())
-        if card_index_match:
-            card_index = int(card_index_match.group(1))
-            return {
-                "action_type": "play",
-                "card_index": card_index
-            }
-
-    # Look for clue action
-    if "clue" in content.lower() or "hint" in content.lower():
-        # Look for target player
-        import re
-        target_match = re.search(r"(?:player|agent)\s+(\d+)", content.lower())
-
-        # Look for clue type and value
-        color_match = re.search(
-            r"(red|yellow|green|blue|white)", content.lower())
-        number_match = re.search(r"number\s+(\d+)", content.lower())
-
-        if target_match:
-            target_id = int(target_match.group(1))
-
-            if color_match:
-                return {
-                    "action_type": "clue",
-                    "target_id": target_id,
-                    "clue_type": "color",
-                    "clue_value": color_match.group(1)
-                }
-            elif number_match:
-                return {
-                    "action_type": "clue",
-                    "target_id": target_id,
-                    "clue_type": "number",
-                    "clue_value": int(number_match.group(1))
-                }
-
-    # Look for discard action
-    if "discard" in content.lower():
-        # Look for card index
-        import re
-        card_index_match = re.search(
-            r"card(?:\sat)?\s+(?:index\s+)?(\d+)", content.lower())
-        if card_index_match:
-            card_index = int(card_index_match.group(1))
-            return {
-                "action_type": "discard",
-                "card_index": card_index
-            }
-
-    # If no action was found, return None
-    return None

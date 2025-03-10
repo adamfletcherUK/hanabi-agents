@@ -38,6 +38,32 @@ You are Player {agent_id} in a game of Hanabi. Based on your analysis and strate
 - Current score: {game_state.score}/25
 - Current player: Player {game_state.current_player} ({"You" if game_state.current_player == agent_id else "Not you"})
 
+## Other Players' Hands and Valid Clues
+"""
+
+    # Add information about other players' hands and valid clues
+    for player_id, hand in game_state.hands.items():
+        if player_id != agent_id:
+            prompt += f"\nPlayer {player_id}'s hand:\n"
+
+            # Show the cards in the player's hand
+            for i, card in enumerate(hand):
+                prompt += f"- Card {i}: {card.color.value} {card.number}\n"
+
+            # Calculate valid clues for this player
+            valid_colors = set()
+            valid_numbers = set()
+
+            for card in hand:
+                valid_colors.add(card.color.value)
+                valid_numbers.add(card.number)
+
+            # Add valid clue information
+            prompt += f"\nValid clues for Player {player_id}:\n"
+            prompt += f"- Colors: {', '.join(sorted(valid_colors))}\n"
+            prompt += f"- Numbers: {', '.join(str(n) for n in sorted(valid_numbers))}\n"
+
+    prompt += """
 ## Your Strategic Thoughts
 """
 
@@ -46,23 +72,30 @@ You are Player {agent_id} in a game of Hanabi. Based on your analysis and strate
         prompt += f"{i+1}. {thought}\n"
 
     prompt += """
-## Available Actions
+## Available Tools
 
-You can take one of the following actions:
+You have access to the following tools:
 
-1. Play a card: `play card X` (where X is the index of the card in your hand, 0-indexed)
-2. Give a clue: `give clue to player Y about color Z` or `give clue to player Y about number Z`
-3. Discard a card: `discard card X` (where X is the index of the card in your hand, 0-indexed)
+1. play_card: Play a card from your hand
+   - card_index: Index of the card to play (0-indexed)
+
+2. give_clue: Give a clue to another player
+   - target_id: ID of the player to give the clue to
+   - clue_type: Type of clue to give ("color" or "number")
+   - clue_value: Value of the clue (e.g., "red", "1")
+
+3. discard: Discard a card from your hand
+   - card_index: Index of the card to discard (0-indexed)
 
 ## Action Proposal Task
 
-Propose a single, specific action to take based on your analysis and thoughts. Be explicit about:
-- The exact action type (play, clue, or discard)
-- The specific card index or clue details
-- Why this is the best action to take right now
+Based on your analysis and thoughts, you must call ONE of the available tools to take an action in the game.
 
-Your response should clearly state the action in a format that can be parsed, such as:
-"I will play card 2" or "I will give a clue to player 1 about red cards" or "I will discard card 0"
+IMPORTANT: 
+- When giving clues, make sure the clue will actually affect at least one card in the target player's hand.
+- Check the "Valid clues" section above to ensure your clue is valid.
+- You MUST use one of the tools above - do not respond with natural language.
+- Only call ONE tool.
 """
 
     # Add error information if available

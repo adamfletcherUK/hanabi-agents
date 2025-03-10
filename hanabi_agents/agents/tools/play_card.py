@@ -1,10 +1,36 @@
 from typing import Dict, Any
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 from ...game.state import GameState
 
 
-def play_card_tool(agent_id: int, card_index: int, game_state: GameState) -> Dict[str, Any]:
+class PlayCardInput(BaseModel):
+    card_index: int = Field(
+        description="Index of the card to play (0-indexed)")
+
+
+@tool(args_schema=PlayCardInput)
+def play_card_tool(card_index: int) -> Dict[str, Any]:
     """
-    Tool for playing a card from the agent's hand.
+    Play a card from the agent's hand.
+
+    Args:
+        card_index: Index of the card to play (0-indexed)
+
+    Returns:
+        Dictionary with the result of the action
+    """
+    # This function will be called with the agent_id and game_state from the graph
+    # We'll implement a wrapper in the graph to provide these values
+
+    # The actual implementation will be in _play_card_impl
+    # This is just a placeholder that will be properly bound in the graph
+    return {"success": False, "error": "Tool not properly bound to agent and game state"}
+
+
+def _play_card_impl(agent_id: int, card_index: int, game_state: GameState) -> Dict[str, Any]:
+    """
+    Implementation of the play card tool with access to agent_id and game_state.
 
     Args:
         agent_id: ID of the agent playing the card

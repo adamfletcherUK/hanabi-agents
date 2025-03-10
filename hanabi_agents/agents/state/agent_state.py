@@ -1,6 +1,26 @@
 from typing import Dict, Any, List, Optional
 from typing_extensions import TypedDict
 from ...game.state import GameState
+from pydantic import BaseModel, Field
+import datetime
+
+
+class ActionError(BaseModel):
+    """Model for action errors"""
+    action: Dict[str, Any] = Field(default_factory=dict)
+    error: str = "Unknown error"
+    error_reason: str = "unknown_error"
+    timestamp: str = Field(
+        default_factory=lambda: datetime.datetime.now().isoformat())
+    turn: int = 0
+
+
+class ActionResult(BaseModel):
+    """Model for action results"""
+    action: Dict[str, Any] = Field(default_factory=dict)
+    result: Dict[str, Any] = Field(default_factory=dict)
+    timestamp: str = Field(
+        default_factory=lambda: datetime.datetime.now().isoformat())
 
 
 class AgentStateDict(TypedDict, total=False):
@@ -35,6 +55,90 @@ class AgentStateDict(TypedDict, total=False):
 
     # Execution tracking
     execution_path: List[str]
+
+
+class AgentMemory(BaseModel):
+    """Enhanced memory management for the agent"""
+    # Game state analysis
+    game_analysis: Optional[Dict[str, Any]] = None
+
+    # Agent thoughts
+    thoughts: List[str] = Field(default_factory=list)
+
+    # Action history
+    action_results: List[ActionResult] = Field(default_factory=list)
+    action_errors: List[ActionError] = Field(default_factory=list)
+
+    # Discussion history
+    discussion_contributions: List[Dict[str, Any]] = Field(
+        default_factory=list)
+
+    # Custom memory fields
+    custom_memory: Dict[str, Any] = Field(default_factory=dict)
+
+    def get_memory(self, key: str, default: Any = None) -> Any:
+        """Get a value from custom memory"""
+        return self.custom_memory.get(key, default)
+
+    def store_memory(self, key: str, value: Any) -> None:
+        """Store a value in custom memory"""
+        # Handle list values specially
+        if key in self.custom_memory and isinstance(self.custom_memory[key], list):
+            if isinstance(value, list):
+                self.custom_memory[key].extend(value)
+            else:
+                self.custom_memory[key].append(value)
+        else:
+            self.custom_memory[key] = value
+
+    def add_action_error(self, action: Dict[str, Any], error: str, error_reason: str = "unknown_error", turn: int = 0) -> None:
+        """Add an action error to memory"""
+        error_record = ActionError(
+            action=action,
+            error=error,
+            error_reason=error_reason,
+            timestamp=datetime.datetime.now().isoformat(),
+            turn=turn
+        )
+        self.action_errors.append(error_record)
+
+    def add_action_result(self, action: Dict[str, Any], result: Dict[str, Any]) -> None:
+        """Add an action result to memory"""
+        result_record = ActionResult(
+            action=action,
+            result=result,
+            timestamp=datetime.datetime.now().isoformat()
+        )
+        self.action_results.append(result_record)
+
+    def dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization"""
+        return {
+            "game_analysis": self.game_analysis,
+            "thoughts": self.thoughts,
+            "action_results": [result.dict() for result in self.action_results],
+            "action_errors": [error.dict() for error in self.action_errors],
+            "discussion_contributions": self.discussion_contributions,
+            "custom_memory": self.custom_memory
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'AgentMemory':
+        """Create an AgentMemory instance from a dictionary"""
+        # Convert action results and errors back to their proper types
+        action_results = [ActionResult(**result)
+                          for result in data.get("action_results", [])]
+        action_errors = [ActionError(**error)
+                         for error in data.get("action_errors", [])]
+
+        return cls(
+            game_analysis=data.get("game_analysis"),
+            thoughts=data.get("thoughts", []),
+            action_results=action_results,
+            action_errors=action_errors,
+            discussion_contributions=data.get("discussion_contributions", []),
+            custom_memory=data.get("custom_memory", {})
+        )
 
 
 class AgentState:

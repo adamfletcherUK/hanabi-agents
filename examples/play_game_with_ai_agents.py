@@ -154,11 +154,44 @@ def log_agent_reasoning(agent, turn_count, print_to_console=True):
                                     f"Generated Thoughts (Turn {turn_count}, Agent {agent.agent_id}):")
                                 logger.info(content)
 
+                                # Extract and log thoughts in a more structured way
+                                extracted_thoughts = []
+                                for line in content.strip().split("\n"):
+                                    line = line.strip()
+                                    if line and (line[0].isdigit() or line[0] in ["•", "-", "*"]):
+                                        # Remove the number or bullet point
+                                        thought = line
+                                        if line[0].isdigit():
+                                            parts = line.split(".", 1)
+                                            if len(parts) > 1:
+                                                thought = parts[1].strip()
+                                        else:
+                                            thought = line[1:].strip()
+
+                                        if thought:
+                                            extracted_thoughts.append(thought)
+
+                                # Log the extracted thoughts
+                                if extracted_thoughts:
+                                    logger.info(
+                                        f"Extracted thoughts for agent {agent.agent_id} (Turn {turn_count}):")
+                                    for j, thought in enumerate(extracted_thoughts):
+                                        logger.info(
+                                            f"  Thought {j+1}: {thought}")
+
                                 if print_to_console:
                                     print(f"\n💭 THOUGHTS (FULL LLM OUTPUT):")
                                     print("-" * 40)
                                     print(content)
                                     print("-" * 40)
+
+                                    if extracted_thoughts:
+                                        print(f"\n💭 EXTRACTED THOUGHTS:")
+                                        for j, thought in enumerate(extracted_thoughts):
+                                            print(f"  {j+1}. {thought}")
+                                    else:
+                                        print(
+                                            "\n⚠️ No thoughts could be extracted from the LLM output")
                             elif i == 5:  # Fifth response is the action proposal
                                 proposed_action = content
                                 # Log full action proposal to file
@@ -191,9 +224,16 @@ def log_agent_reasoning(agent, turn_count, print_to_console=True):
                 if memory_thoughts:
                     logger.info(
                         f"✅ Validated: {len(memory_thoughts)} thoughts stored in memory")
+                    # Explicitly log each thought
+                    logger.info("Agent's thoughts:")
+                    for i, thought in enumerate(memory_thoughts):
+                        logger.info(f"  Thought {i+1}: {thought}")
                     if print_to_console:
                         print(
                             f"\n✅ MEMORY VALIDATION: {len(memory_thoughts)} thoughts stored in memory")
+                        print("Agent's thoughts:")
+                        for i, thought in enumerate(memory_thoughts):
+                            print(f"  Thought {i+1}: {thought}")
                 else:
                     logger.warning("❌ No thoughts found in memory store")
                     if print_to_console:
@@ -303,6 +343,44 @@ def main():
                     print(content)
                     print("-" * 40)
 
+                    # Log the content to the log file
+                    logger.info(f"LLM OUTPUT (STEP {i//2 + 1}):")
+                    logger.info(content)
+
+                    # If this is the thought generation step (step 2)
+                    if i == 3:  # Third response (index 3) is thought generation
+                        # Extract and log thoughts
+                        thoughts = []
+                        for line in content.strip().split("\n"):
+                            line = line.strip()
+                            if line and (line[0].isdigit() or line[0] in ["•", "-", "*"]):
+                                # Remove the number or bullet point
+                                thought = line
+                                if line[0].isdigit():
+                                    parts = line.split(".", 1)
+                                    if len(parts) > 1:
+                                        thought = parts[1].strip()
+                                else:
+                                    thought = line[1:].strip()
+
+                                if thought:
+                                    thoughts.append(thought)
+
+                        # Log the extracted thoughts
+                        if thoughts:
+                            logger.info(
+                                f"Extracted thoughts for agent {active_agent.agent_id} (Turn {turn_count + 1}):")
+                            for j, thought in enumerate(thoughts):
+                                logger.info(f"  Thought {j+1}: {thought}")
+                            print(f"\n💭 EXTRACTED THOUGHTS:")
+                            for j, thought in enumerate(thoughts):
+                                print(f"  {j+1}. {thought}")
+                        else:
+                            logger.info(
+                                f"No thoughts could be extracted from the LLM output for agent {active_agent.agent_id}")
+                            print(
+                                "\n⚠️ No thoughts could be extracted from the LLM output")
+
         # Add the contribution to the discussion history
         discussion_contributions.append({
             "player_id": active_player_id,
@@ -321,6 +399,21 @@ def main():
 
         # Log the agent's reasoning chain
         log_agent_reasoning(current_agent, turn_count + 1)
+
+        # Explicitly log the agent's thoughts
+        current_thoughts = current_agent.get_memory_from_store(
+            "current_thoughts", [])
+        if current_thoughts:
+            logger.info(
+                f"Agent {current_agent.agent_id}'s thoughts for turn {turn_count + 1}:")
+            for i, thought in enumerate(current_thoughts):
+                logger.info(f"  Thought {i+1}: {thought}")
+            print(f"\n💭 Agent {current_agent.agent_id}'s thoughts:")
+            for i, thought in enumerate(current_thoughts):
+                print(f"  {i+1}. {thought}")
+        else:
+            logger.warning(
+                f"No thoughts found for agent {current_agent.agent_id} in turn {turn_count + 1}")
 
         # Display the formatted action
         action_display = game_logger.format_action_for_display(
