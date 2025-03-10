@@ -2,7 +2,6 @@ from typing import Dict, Any, List, Optional, Union
 import os
 import logging
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 from .base import Agent
 from ..game.state import GameState
@@ -38,14 +37,11 @@ class AIAgent(Agent):
         # Initialize the model
         self.model = self._initialize_model(model_name)
 
-        # Initialize the memory store
-        self.memory_store = InMemoryStore()
+        # Initialize memory storage as a simple dictionary
+        self.memory_store = {}
 
         # Initialize the agent memory
         self.agent_memory = AgentMemory()
-
-        # Initialize the checkpointer with the memory store
-        self.checkpointer = MemorySaver(self.memory_store)
 
         # Initialize the reasoning graph
         self.reasoning_graph = setup_reasoning_graph(self)
@@ -123,6 +119,12 @@ class AIAgent(Agent):
         thoughts = result.get("current_thoughts", [])
         messages = result.get("messages", [])
 
+        # Store the thoughts in the agent's memory
+        self.agent_memory.thoughts = thoughts
+
+        # Store the messages for later reference
+        self.store_memory("messages", messages)
+
         # Find the last message with tool calls
         tool_calls = None
         for message in reversed(messages):
@@ -133,6 +135,8 @@ class AIAgent(Agent):
         # Store the tool calls for later use in decide_action
         if tool_calls:
             self.store_memory("tool_calls", tool_calls)
+            # Also store in the agent's memory for persistence
+            self.agent_memory.store_memory("proposed_tool_calls", tool_calls)
 
         # Format the thoughts and tool calls into a contribution
         contribution = "## Game State Analysis\n\n"
@@ -145,15 +149,15 @@ class AIAgent(Agent):
             tool_name = tool_call.get("name")
             tool_args = tool_call.get("args", {})
 
-            if tool_name == "play_card":
+            if tool_name == "play_card_tool":
                 card_index = tool_args.get("card_index", 0)
                 contribution += f"I suggest playing card {card_index}."
-            elif tool_name == "give_clue":
+            elif tool_name == "give_clue_tool":
                 target_id = tool_args.get("target_id", 0)
                 clue_type = tool_args.get("clue_type", "unknown")
                 clue_value = tool_args.get("clue_value", "unknown")
                 contribution += f"I suggest giving a {clue_type} clue about {clue_value} to Player {target_id}."
-            elif tool_name == "discard":
+            elif tool_name == "discard_tool":
                 card_index = tool_args.get("card_index", 0)
                 contribution += f"I suggest discarding card {card_index}."
             else:
@@ -200,35 +204,116 @@ class AIAgent(Agent):
                 config={"agent_id": self.agent_id, "agent_instance": self}
             )
 
+            # Extract thoughts and store them in the agent's memory
+            thoughts = result.get("current_thoughts", [])
+            if thoughts:
+                self.agent_memory.thoughts = thoughts
+                self.store_memory("current_thoughts", thoughts)
+
             # Extract tool calls from the result
             messages = result.get("messages", [])
+            self.store_memory("messages", messages)
+
             for message in reversed(messages):
                 if hasattr(message, "tool_calls") and message.tool_calls:
                     tool_calls = message.tool_calls
+                    # Store the tool calls in memory
+                    self.store_memory("tool_calls", tool_calls)
+                    # Also store in the agent's memory for persistence
+                    self.agent_memory.store_memory(
+                        "proposed_tool_calls", tool_calls)
                     break
 
-        # If still no tool calls, default to discarding the first card
+        # If still no tool calls, create a smart fallback action
         if not tool_calls:
             logger.warning(
-                f"Agent {self.agent_id} did not generate any tool calls, defaulting to discard")
-            return {
-                "type": "discard",
-                "card_index": 0
-            }
+                f"Agent {self.agent_id} did not generate any tool calls, creating smart fallback action")
+
+            # Check if we're at max clue tokens
+            if game_state.clue_tokens >= game_state.max_clue_tokens:
+                # If at max clue tokens, we can't discard - give a clue instead
+                logger.info(
+                    f"At max clue tokens ({game_state.clue_tokens}), defaulting to give clue")
+
+                # Find a valid target for a clue
+                target_id = None
+                for player_id in game_state.hands:
+                    if player_id != self.agent_id and game_state.hands[player_id]:
+                        target_id = player_id
+                        break
+
+                if target_id is not None:
+                    # Find a valid clue to give
+                    target_hand = game_state.hands[target_id]
+                    if target_hand:
+                        # Try to give a color clue
+                        return {
+                            "type": "give_clue",
+                            "target_id": target_id,
+                            "clue": {
+                                "type": "color",
+                                "value": target_hand[0].color.value
+                            }
+                        }
+
+                # If we couldn't find a valid clue target, try to play a card
+                return {
+                    "type": "play_card",
+                    "card_index": 0
+                }
+            else:
+                # If not at max clue tokens, we can discard
+                return {
+                    "type": "discard",
+                    "card_index": 0
+                }
 
         # Get the first tool call
         tool_call = tool_calls[0]
         tool_name = tool_call.get("name")
         tool_args = tool_call.get("args", {})
 
+        # Check if the tool call is a discard when at max clue tokens
+        if tool_name == "discard_tool" and game_state.clue_tokens >= game_state.max_clue_tokens:
+            logger.warning(
+                f"Agent {self.agent_id} attempted to discard when at max clue tokens, switching to give clue")
+
+            # Find a valid target for a clue
+            target_id = None
+            for player_id in game_state.hands:
+                if player_id != self.agent_id and game_state.hands[player_id]:
+                    target_id = player_id
+                    break
+
+            if target_id is not None:
+                # Find a valid clue to give
+                target_hand = game_state.hands[target_id]
+                if target_hand:
+                    # Try to give a color clue
+                    return {
+                        "type": "give_clue",
+                        "target_id": target_id,
+                        "clue": {
+                            "type": "color",
+                            "value": target_hand[0].color.value
+                        }
+                    }
+
+            # If we couldn't find a valid clue target, try to play a card
+            return {
+                "type": "play_card",
+                "card_index": 0
+            }
+
         # Convert the tool call to the format expected by the game engine
-        if tool_name == "play_card":
+        if tool_name == "play_card_tool":
             return {
                 "type": "play_card",
                 "card_index": tool_args.get("card_index", 0)
             }
-        elif tool_name == "give_clue":
-            return {
+        elif tool_name == "give_clue_tool":
+            # Ensure we have all the required fields with proper names
+            action = {
                 "type": "give_clue",
                 "target_id": tool_args.get("target_id", 0),
                 "clue": {
@@ -236,7 +321,12 @@ class AIAgent(Agent):
                     "value": tool_args.get("clue_value", "red")
                 }
             }
-        elif tool_name == "discard":
+
+            # Log the translation for debugging
+            logger.info(f"Translated give_clue_tool to action: {action}")
+
+            return action
+        elif tool_name == "discard_tool":
             return {
                 "type": "discard",
                 "card_index": tool_args.get("card_index", 0)
@@ -265,6 +355,30 @@ class AIAgent(Agent):
 
         # Store the action result in structured memory
         self.agent_memory.add_action_result(action, result_dict)
+
+        # Store the action and result in the memory store for immediate access
+        self.store_memory("last_action", action)
+        self.store_memory("last_result", result_dict)
+
+        # Store the action in a standardized format for history tracking
+        standardized_action = {
+            "type": action.get("type", "unknown"),
+            "timestamp": datetime.datetime.now().isoformat(),
+            "turn": self.current_game_state.turn_count if self.current_game_state else 0,
+        }
+
+        # Add specific details based on action type
+        if action.get("type") == "play_card":
+            standardized_action["card_index"] = action.get("card_index")
+        elif action.get("type") == "give_clue":
+            standardized_action["target_id"] = action.get("target_id")
+            standardized_action["clue"] = action.get("clue", {})
+        elif action.get("type") == "discard":
+            standardized_action["card_index"] = action.get("card_index")
+
+        # Store the standardized action
+        self.agent_memory.store_memory(
+            "standardized_actions", standardized_action)
 
         # Log any errors for learning
         if isinstance(result, dict) and not result.get("success", True):
@@ -312,69 +426,56 @@ class AIAgent(Agent):
                 turn=self.current_game_state.turn_count if self.current_game_state else 0
             )
 
-        # Save the current state to the checkpoint
-        config_dict = {
-            "agent_id": self.agent_id,
-            "timestamp": datetime.datetime.now().isoformat()
-        }
-        self.checkpointer.save(self.agent_memory.dict(), config_dict)
+        # Save the current state to memory store
+        self.memory_store[f"agent_{self.agent_id}"] = self.agent_memory.dict()
 
     def get_memory_from_store(self, key, default=None):
         """
-        Get memory from the memory store.
+        Get a value from the memory store.
 
         Args:
-            key: The key to retrieve
-            default: Default value if key not found
+            key: Key to retrieve
+            default: Default value to return if key not found
 
         Returns:
-            The stored value or default
+            Value from memory store or default
         """
-        return self.agent_memory.get_memory(key, default)
+        return self.memory_store.get(key, default)
 
     def store_memory(self, key, value):
         """
-        Store a value in memory.
+        Store a value in the memory store.
 
         Args:
-            key: The key to store under
-            value: The value to store
+            key: Key to store under
+            value: Value to store
         """
-        self.agent_memory.store_memory(key, value)
+        self.memory_store[key] = value
 
-        # Save the current state to the checkpoint after each memory update
-        config_dict = {
-            "agent_id": self.agent_id,
-            "timestamp": datetime.datetime.now().isoformat()
-        }
-        self.checkpointer.save(self.agent_memory.dict(), config_dict)
+        # Save the current state to memory store after each memory update
+        self.memory_store[f"agent_{self.agent_id}"] = self.agent_memory.dict()
 
     def load_memory_from_checkpoint(self, config_filter=None):
         """
         Load memory from a checkpoint.
 
         Args:
-            config_filter: Optional filter for checkpoint config
+            config_filter: Optional filter for checkpoint config (not used in this implementation)
 
         Returns:
             True if memory was loaded, False otherwise
         """
-        if config_filter is None:
-            config_filter = {"agent_id": self.agent_id}
+        try:
+            # Get the memory for this agent
+            memory_data = self.memory_store.get(f"agent_{self.agent_id}")
 
-        # Get the latest checkpoint for this agent
-        checkpoint = self.checkpointer.get_latest(config_filter)
+            if memory_data:
+                # Restore agent memory from stored data
+                self.agent_memory = AgentMemory.from_dict(memory_data)
+                return True
+            return False
 
-        if checkpoint:
-            # Extract the state and config
-            state_dict, config = checkpoint
-
-            # Load the state into agent memory
-            self.agent_memory = AgentMemory.from_dict(state_dict)
-
-            logger.info(
-                f"Agent {self.agent_id} loaded memory from checkpoint (timestamp: {config.get('timestamp')})")
-            return True
-        else:
-            logger.warning(f"No checkpoint found for agent {self.agent_id}")
+        except Exception as e:
+            logger.error(
+                f"Error loading memory for agent {self.agent_id}: {str(e)}")
             return False

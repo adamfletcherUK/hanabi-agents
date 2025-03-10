@@ -44,37 +44,80 @@ def setup_reasoning_graph(agent):
         )
 
     def discard_with_context(args):
+        # Add explicit check for max clue tokens before calling the implementation
+        if agent.current_game_state.clue_tokens >= agent.current_game_state.max_clue_tokens:
+            logger.warning(
+                f"Agent {agent.agent_id} attempted to discard when at max clue tokens")
+            return {
+                "success": False,
+                "error": f"Cannot discard when clue tokens are at maximum ({agent.current_game_state.max_clue_tokens})",
+                "action_type": "discard",
+                "guidance": "When at max clue tokens, you must either play a card or give a clue instead of discarding."
+            }
         return _discard_impl(agent.agent_id, args["card_index"], agent.current_game_state)
 
     # Define the tools with proper context
     tools = [
         Tool.from_function(
             func=play_card_with_context,
-            name="play_card",
+            name="play_card_tool",
             description="Play a card from your hand",
             args_schema=play_card_tool.args_schema
         ),
         Tool.from_function(
             func=give_clue_with_context,
-            name="give_clue",
+            name="give_clue_tool",
             description="Give a clue to another player",
             args_schema=give_clue_tool.args_schema
         ),
         Tool.from_function(
             func=discard_with_context,
-            name="discard",
-            description="Discard a card from your hand",
+            name="discard_tool",
+            description="Discard a card from your hand (only when not at max clue tokens)",
             args_schema=discard_tool.args_schema
         )
     ]
 
     # Create a ToolNode with error handling
     tool_node = ToolNode(tools)
+
+    # Enhanced error handling function
+    def enhanced_error_handler(state, error, config=None):
+        """Enhanced error handler that provides better guidance for common errors"""
+        logger.error(f"Tool error: {error}")
+
+        # Create a copy of the state to avoid modifying the original
+        new_state = state.copy()
+
+        # Add the error to the state
+        errors = new_state.get("errors", [])
+
+        # Check if the error is about max clue tokens
+        if "max" in str(error).lower() and "clue" in str(error).lower() and "token" in str(error).lower():
+            error_info = {
+                "action_type": "discard",
+                "error": str(error),
+                "guidance": "When at max clue tokens, you must either play a card or give a clue instead of discarding."
+            }
+        else:
+            # Generic error handling
+            error_info = handle_tool_error(state, agent_id=agent.agent_id)
+
+        errors.append(error_info)
+        new_state["errors"] = errors
+
+        # Add a message about the error
+        messages = new_state.get("messages", [])
+        messages.append(ToolMessage(
+            content=f"Error: {error_info.get('error')}. {error_info.get('guidance', '')}",
+            tool_call_id="error"
+        ))
+        new_state["messages"] = messages
+
+        return new_state
+
     tool_node_with_error_handling = tool_node.with_fallbacks([
-        RunnableLambda(
-            lambda state, error, config=None: handle_tool_error(
-                state, agent_id=agent.agent_id)
-        )
+        RunnableLambda(enhanced_error_handler)
     ])
 
     # Add nodes for each reasoning step with store and config access

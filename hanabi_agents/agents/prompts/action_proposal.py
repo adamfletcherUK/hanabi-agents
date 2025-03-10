@@ -86,7 +86,18 @@ You have access to the following tools:
 
 3. discard: Discard a card from your hand
    - card_index: Index of the card to discard (0-indexed)
+"""
 
+    # Add a clear warning about discarding when at max clue tokens
+    if game_state.clue_tokens >= game_state.max_clue_tokens:
+        prompt += f"""
+## IMPORTANT RESTRICTION
+⚠️ You currently have {game_state.clue_tokens}/{game_state.max_clue_tokens} clue tokens, which is the maximum.
+⚠️ You CANNOT discard when at maximum clue tokens.
+⚠️ You MUST either play a card or give a clue.
+"""
+
+    prompt += """
 ## Action Proposal Task
 
 Based on your analysis and thoughts, you must call ONE of the available tools to take an action in the game.

@@ -3,6 +3,7 @@ from hanabi_agents.agents.ai_agent import AIAgent
 from hanabi_agents.game.engine import GameEngine
 from hanabi_agents.utils import logging as hanabi_logging
 from hanabi_agents.utils import game_logger
+from hanabi_agents.utils.game_logger import COLOR_EMOJI
 import os
 import sys
 import logging
@@ -79,182 +80,174 @@ def log_agent_reasoning(agent, turn_count, print_to_console=True):
     logger.info(
         f"--- Agent {agent.agent_id} Reasoning Chain (Turn {turn_count}) ---")
 
-    # Get the messages from the reasoning graph's last invocation
-    if hasattr(agent, 'reasoning_graph') and hasattr(agent, 'checkpointer'):
-        # Try to get the latest checkpoint
-        try:
-            # Get the messages from the agent's memory
-            messages = agent.get_memory_from_store("messages", [])
+    # Check if the agent has the necessary attributes
+    if hasattr(agent, 'agent_memory'):
+        # Get the thoughts from the agent's memory
+        thoughts = agent.agent_memory.thoughts
 
-            if messages:
-                logger.info(
-                    f"Found {len(messages)} messages in agent's memory")
+        if thoughts:
+            logger.info(
+                f"Found {len(thoughts)} thoughts in agent's memory")
 
-                # Log each message in the reasoning chain
-                # Always log the header to the file
-                logger.info(
-                    f"🧠 REASONING CHAIN FOR AGENT {agent.agent_id} (Turn {turn_count}):")
+            # Log each thought in the reasoning chain
+            logger.info(
+                f"🧠 REASONING CHAIN FOR AGENT {agent.agent_id} (Turn {turn_count}):")
 
-                if print_to_console:
-                    print(
-                        f"\n🧠 REASONING CHAIN FOR AGENT {agent.agent_id} (Turn {turn_count}):")
-                    print("=" * 80)
-
-                # Track the reasoning steps
-                analysis = None
-                thoughts = []
-                proposed_action = None
-
-                for i, msg in enumerate(messages):
-                    if hasattr(msg, 'content'):
-                        # Determine the type of message based on content patterns
-                        content = msg.content
-
-                        # Log the message with appropriate formatting
-                        if i % 2 == 0:  # This is a prompt
-                            if "analyze the current game state" in content.lower():
-                                step_type = "STATE ANALYSIS PROMPT"
-                            elif "generate strategic thoughts" in content.lower():
-                                step_type = "THOUGHT GENERATION PROMPT"
-                            elif "propose a concrete action" in content.lower():
-                                step_type = "ACTION PROPOSAL PROMPT"
-                            else:
-                                step_type = "PROMPT"
-
-                            # Always log to file
-                            logger.info(f"Step {i//2 + 1}: {step_type}")
-
-                            if print_to_console:
-                                print(f"\n📝 STEP {i//2 + 1}: {step_type}")
-                                print("-" * 40)
-                                # Uncomment to print the full prompt (can be very verbose)
-                                # print(content)
-                                print("-" * 40)
-                        else:  # This is a response
-                            if i == 1:  # First response is the analysis
-                                analysis = content
-                                # Log full analysis to file
-                                logger.info(
-                                    f"Game State Analysis (Turn {turn_count}, Agent {agent.agent_id}):")
-                                logger.info(content)
-
-                                if print_to_console:
-                                    print(f"\n🔍 ANALYSIS (FULL LLM OUTPUT):")
-                                    print("-" * 40)
-                                    print(content)
-                                    print("-" * 40)
-                            elif i == 3:  # Third response is thought generation
-                                # Extract thoughts
-                                thought_lines = [line.strip() for line in content.split('\n')
-                                                 if line.strip() and not line.strip().startswith("Thought") and not line.strip().startswith("#")]
-                                thoughts.extend(thought_lines)
-
-                                # Log full thoughts to file
-                                logger.info(
-                                    f"Generated Thoughts (Turn {turn_count}, Agent {agent.agent_id}):")
-                                logger.info(content)
-
-                                # Extract and log thoughts in a more structured way
-                                extracted_thoughts = []
-                                for line in content.strip().split("\n"):
-                                    line = line.strip()
-                                    if line and (line[0].isdigit() or line[0] in ["•", "-", "*"]):
-                                        # Remove the number or bullet point
-                                        thought = line
-                                        if line[0].isdigit():
-                                            parts = line.split(".", 1)
-                                            if len(parts) > 1:
-                                                thought = parts[1].strip()
-                                        else:
-                                            thought = line[1:].strip()
-
-                                        if thought:
-                                            extracted_thoughts.append(thought)
-
-                                # Log the extracted thoughts
-                                if extracted_thoughts:
-                                    logger.info(
-                                        f"Extracted thoughts for agent {agent.agent_id} (Turn {turn_count}):")
-                                    for j, thought in enumerate(extracted_thoughts):
-                                        logger.info(
-                                            f"  Thought {j+1}: {thought}")
-
-                                if print_to_console:
-                                    print(f"\n💭 THOUGHTS (FULL LLM OUTPUT):")
-                                    print("-" * 40)
-                                    print(content)
-                                    print("-" * 40)
-
-                                    if extracted_thoughts:
-                                        print(f"\n💭 EXTRACTED THOUGHTS:")
-                                        for j, thought in enumerate(extracted_thoughts):
-                                            print(f"  {j+1}. {thought}")
-                                    else:
-                                        print(
-                                            "\n⚠️ No thoughts could be extracted from the LLM output")
-                            elif i == 5:  # Fifth response is the action proposal
-                                proposed_action = content
-                                # Log full action proposal to file
-                                logger.info(
-                                    f"Proposed Action (Turn {turn_count}, Agent {agent.agent_id}):")
-                                logger.info(content)
-
-                                if print_to_console:
-                                    print(
-                                        f"\n🎬 PROPOSED ACTION (FULL LLM OUTPUT):")
-                                    print("-" * 40)
-                                    print(content)
-                                    print("-" * 40)
-                            else:
-                                # Any other responses
-                                # Log other responses to file
-                                logger.info(
-                                    f"Other LLM Output (Step {i//2 + 1}, Turn {turn_count}, Agent {agent.agent_id}):")
-                                logger.info(content)
-
-                                if print_to_console:
-                                    print(f"\n📄 LLM OUTPUT (STEP {i//2 + 1}):")
-                                    print("-" * 40)
-                                    print(content)
-                                    print("-" * 40)
-
-                # Validate memory storage
-                memory_thoughts = agent.get_memory_from_store(
-                    "current_thoughts", [])
-                if memory_thoughts:
-                    logger.info(
-                        f"✅ Validated: {len(memory_thoughts)} thoughts stored in memory")
-                    # Explicitly log each thought
-                    logger.info("Agent's thoughts:")
-                    for i, thought in enumerate(memory_thoughts):
-                        logger.info(f"  Thought {i+1}: {thought}")
-                    if print_to_console:
-                        print(
-                            f"\n✅ MEMORY VALIDATION: {len(memory_thoughts)} thoughts stored in memory")
-                        print("Agent's thoughts:")
-                        for i, thought in enumerate(memory_thoughts):
-                            print(f"  Thought {i+1}: {thought}")
-                else:
-                    logger.warning("❌ No thoughts found in memory store")
-                    if print_to_console:
-                        print(
-                            "\n❌ MEMORY VALIDATION: No thoughts found in memory store")
-
-                if print_to_console:
-                    print("=" * 80)
-            else:
-                logger.warning("No messages found in agent's memory")
-                if print_to_console:
-                    print("\n⚠️ No reasoning chain available - no messages in memory")
-        except Exception as e:
-            logger.error(f"Error retrieving reasoning chain: {e}")
             if print_to_console:
-                print(f"\n❌ Error retrieving reasoning chain: {e}")
+                print(
+                    f"\n🧠 REASONING CHAIN FOR AGENT {agent.agent_id} (Turn {turn_count}):")
+                print("=" * 80)
+
+            for i, thought in enumerate(thoughts):
+                thought_str = f"Thought {i+1}: {thought}"
+                logger.info(thought_str)
+                if print_to_console:
+                    print(thought_str)
+
+            if print_to_console:
+                print("=" * 80)
+        else:
+            logger.warning(
+                f"No thoughts found for agent {agent.agent_id} in turn {turn_count}")
+            if print_to_console:
+                print(
+                    f"\n⚠️ No thoughts found for agent {agent.agent_id} in turn {turn_count}")
     else:
         logger.warning(
             "Agent does not have reasoning_graph or checkpointer attributes")
         if print_to_console:
             print("\n⚠️ Agent does not have reasoning capabilities")
+
+
+def log_action_history(agents, turn_count, print_to_console=True):
+    """
+    Log the action history for all agents.
+
+    Args:
+        agents: List of AI agents
+        turn_count: The current turn count
+        print_to_console: Whether to print to console
+    """
+    logger.info(f"--- Action History (Turn {turn_count}) ---")
+
+    if print_to_console:
+        print(f"\n📜 ACTION HISTORY (Turn {turn_count}):")
+        print("=" * 80)
+
+    # Collect all actions from all agents
+    all_actions = []
+
+    for agent in agents:
+        if hasattr(agent, 'agent_memory'):
+            # Get action results from agent memory
+            action_results = agent.agent_memory.action_results
+
+            for action_result in action_results:
+                all_actions.append({
+                    "agent_id": agent.agent_id,
+                    "agent_name": agent.name,
+                    "action": action_result.action,
+                    "result": action_result.result,
+                    "timestamp": action_result.timestamp
+                })
+
+    # Sort actions by timestamp
+    all_actions.sort(key=lambda x: x["timestamp"])
+
+    # Log each action
+    if all_actions:
+        for i, action_data in enumerate(all_actions):
+            agent_name = action_data["agent_name"]
+            agent_id = action_data["agent_id"]
+            action = action_data["action"]
+            result = action_data["result"]
+
+            action_type = action.get("type", "unknown")
+            action_str = ""
+
+            if action_type == "play_card":
+                card_index = action.get("card_index")
+                # Use a default value only if card_index is None or not present
+                card_index_str = str(
+                    card_index) if card_index is not None else "?"
+                action_str = f"Play card at position {card_index_str}"
+
+                # Add result information if available
+                if "card" in result:
+                    card = result["card"]
+                    success = result.get("success", False)
+                    emoji = "✅" if success else "❌"
+                    if hasattr(card, "color") and hasattr(card, "number"):
+                        color_name = card.color.value if hasattr(
+                            card.color, "value") else str(card.color)
+                        color_emoji = COLOR_EMOJI.get(color_name, "")
+                        action_str += f" → {color_emoji}{card.number} {emoji}"
+                    else:
+                        action_str += f" → {card} {emoji}"
+
+            elif action_type == "give_clue":
+                target_id = action.get("target_id")
+                clue = action.get("clue", {})
+                clue_type = clue.get("type")
+                clue_value = clue.get("value")
+
+                # Use default values only if the actual values are None or not present
+                target_id_str = str(
+                    target_id) if target_id is not None else "?"
+                clue_type_str = str(
+                    clue_type) if clue_type is not None else "?"
+                clue_value_str = str(
+                    clue_value) if clue_value is not None else "?"
+
+                if clue_type == "color":
+                    color_emoji = COLOR_EMOJI.get(clue_value, "")
+                    action_str = f"Give {color_emoji} color clue to Player {target_id_str}"
+                else:
+                    action_str = f"Give number {clue_value_str} clue to Player {target_id_str}"
+
+                # Add result information if available
+                if "affected_cards" in result:
+                    affected_count = len(result["affected_cards"])
+                    action_str += f" → Affected {affected_count} cards"
+
+            elif action_type == "discard":
+                card_index = action.get("card_index")
+                # Use a default value only if card_index is None or not present
+                card_index_str = str(
+                    card_index) if card_index is not None else "?"
+                action_str = f"Discard card at position {card_index_str}"
+
+                # Add result information if available
+                if "card" in result:
+                    card = result["card"]
+                    if hasattr(card, "color") and hasattr(card, "number"):
+                        color_name = card.color.value if hasattr(
+                            card.color, "value") else str(card.color)
+                        color_emoji = COLOR_EMOJI.get(color_name, "")
+                        action_str += f" → {color_emoji}{card.number}"
+                    else:
+                        action_str += f" → {card}"
+            else:
+                # Handle unknown action types
+                action_str = f"Unknown action type: {action_type}"
+                # Try to include any available details
+                for key, value in action.items():
+                    if key != "type":
+                        action_str += f", {key}: {value}"
+
+            # Log the action
+            log_message = f"Action {i+1}: Player {agent_id} ({agent_name}) - {action_str}"
+            logger.info(log_message)
+
+            if print_to_console:
+                print(log_message)
+    else:
+        logger.info("No actions recorded yet")
+        if print_to_console:
+            print("No actions recorded yet")
+
+    if print_to_console:
+        print("=" * 80)
 
 
 def main():
@@ -431,8 +424,62 @@ def main():
         # Notify the agent of the result
         current_agent.notify_action_result(action, result)
 
+        # Create a detailed action history entry for logging
+        action_history_entry = {
+            "turn": turn_count + 1,
+            "player_id": current_player_id,
+            "player_name": current_agent.name,
+            "action_type": action.get("type", "unknown"),
+            "action_details": action,
+            "result": result
+        }
+
+        # Store the action history in each agent's memory
+        for agent in agents:
+            agent.agent_memory.store_memory(
+                "action_history", action_history_entry)
+
+            # Update game summary for each agent
+            game_summary = f"Turn {turn_count + 1}: Player {current_player_id} ({current_agent.name}) - "
+
+            if action.get("type") == "play_card":
+                card_index = action.get("card_index", "?")
+                game_summary += f"Played card at position {card_index}"
+                if isinstance(result, dict) and "card" in result:
+                    card = result["card"]
+                    if hasattr(card, "color") and hasattr(card, "number"):
+                        color_name = card.color.value if hasattr(
+                            card.color, "value") else str(card.color)
+                        color_emoji = COLOR_EMOJI.get(color_name, "")
+                        game_summary += f" ({color_emoji}{card.number})"
+            elif action.get("type") == "give_clue":
+                target_id = action.get("target_id", "?")
+                clue = action.get("clue", {})
+                clue_type = clue.get("type", "?")
+                clue_value = clue.get("value", "?")
+                game_summary += f"Gave {clue_type} clue ({clue_value}) to Player {target_id}"
+            elif action.get("type") == "discard":
+                card_index = action.get("card_index", "?")
+                game_summary += f"Discarded card at position {card_index}"
+                if isinstance(result, dict) and "card" in result:
+                    card = result["card"]
+                    if hasattr(card, "color") and hasattr(card, "number"):
+                        color_name = card.color.value if hasattr(
+                            card.color, "value") else str(card.color)
+                        color_emoji = COLOR_EMOJI.get(color_name, "")
+                        game_summary += f" ({color_emoji}{card.number})"
+
+            # Add game state information
+            game_summary += f". Score: {engine.state.score}, Clues: {engine.state.clue_tokens}, Fuses: {engine.state.fuse_tokens}"
+
+            # Store the game summary
+            agent.agent_memory.store_memory("game_summary", game_summary)
+
         # Log the updated game state after the action
         game_logger.log_game_state(engine, print_to_console=True)
+
+        # Log the action history for all agents
+        log_action_history(agents, turn_count + 1)
 
         # Check if the game is over
         game_over = engine.is_game_over()
@@ -447,6 +494,22 @@ def main():
         engine.get_game_over_reason(),
         print_to_console=True
     )
+
+    # Log the final action history
+    print("\n📜 FINAL ACTION HISTORY:")
+    print("=" * 80)
+    log_action_history(agents, turn_count)
+
+    # Print a summary of the game
+    print("\n📊 GAME SUMMARY:")
+    print("=" * 80)
+    print(f"Total turns played: {turn_count}")
+    print(f"Final score: {game_state.score}/25")
+    print(
+        f"Remaining clue tokens: {game_state.clue_tokens}/{game_state.max_clue_tokens}")
+    print(f"Remaining fuse tokens: {game_state.fuse_tokens}/3")
+    print(f"Game over reason: {engine.get_game_over_reason()}")
+    print("=" * 80)
 
 
 if __name__ == "__main__":

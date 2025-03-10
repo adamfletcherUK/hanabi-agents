@@ -40,6 +40,15 @@ def _discard_impl(agent_id: int, card_index: int, game_state: GameState) -> Dict
     Returns:
         Dictionary with the result of the action
     """
+    # Explicitly check for max clue tokens first
+    if game_state.clue_tokens >= game_state.max_clue_tokens:
+        return {
+            "success": False,
+            "error": f"Cannot discard when clue tokens are at maximum ({game_state.max_clue_tokens})",
+            "action_type": "discard",
+            "guidance": "When at max clue tokens, you must either play a card or give a clue instead of discarding."
+        }
+
     # Validate the action
     if not game_state.is_valid_move(agent_id, "discard", card_index=card_index):
         return {

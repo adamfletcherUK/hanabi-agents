@@ -170,24 +170,47 @@ def log_action_result(action, result, player_name, print_to_console=False):
         card = result["card"]
         success = result.get("success", False)
         emoji = "✅" if success else "❌"
-        color_emoji = COLOR_EMOJI.get(card.color.value, "")
 
-        action_str = f"Card played: {color_emoji}{card.number} {emoji}"
+        if hasattr(card, "color") and hasattr(card, "number"):
+            color_emoji = COLOR_EMOJI.get(card.color.value, "")
+            action_str = f"Card played: {color_emoji}{card.number} {emoji}"
+        else:
+            action_str = f"Card played: {card} {emoji}"
+
         logger.info(action_str)
         if print_to_console:
             print(action_str)
 
-    elif action_type == "give_clue" and "affected_cards" in result:
-        action_str = f"Clue affected {len(result['affected_cards'])} cards"
+    elif action_type == "give_clue":
+        # Extract clue details
+        clue = action.get("clue", {})
+        clue_type = clue.get("type", "unknown")
+        clue_value = clue.get("value", "unknown")
+        target_id = action.get("target_id", "?")
+
+        # Format the clue value with emoji if it's a color
+        if clue_type == "color":
+            color_emoji = COLOR_EMOJI.get(clue_value, "")
+            clue_desc = f"{color_emoji} color"
+        else:
+            clue_desc = f"number {clue_value}"
+
+        affected_count = len(result.get('affected_cards', []))
+        action_str = f"Clue given: {clue_desc} to Player {target_id}, affected {affected_count} cards"
+
         logger.info(action_str)
         if print_to_console:
             print(action_str)
 
     elif action_type == "discard" and "card" in result:
         card = result["card"]
-        color_emoji = COLOR_EMOJI.get(card.color.value, "")
 
-        action_str = f"Card discarded: {color_emoji}{card.number}"
+        if hasattr(card, "color") and hasattr(card, "number"):
+            color_emoji = COLOR_EMOJI.get(card.color.value, "")
+            action_str = f"Card discarded: {color_emoji}{card.number}"
+        else:
+            action_str = f"Card discarded: {card}"
+
         logger.info(action_str)
         if print_to_console:
             print(action_str)
@@ -221,7 +244,13 @@ def format_action_for_display(action, player_name):
         clue = action.get("clue", {})
         clue_type = clue.get("type", "unknown")
         clue_value = clue.get("value", "unknown")
-        return f"👤 {player_name} decides to: give a {clue_type} clue ({clue_value}) to Player {target_id}"
+
+        # Format the clue value with emoji if it's a color
+        if clue_type == "color":
+            color_emoji = COLOR_EMOJI.get(clue_value, "")
+            return f"👤 {player_name} decides to: give a {color_emoji} color clue to Player {target_id}"
+        else:
+            return f"👤 {player_name} decides to: give a number {clue_value} clue to Player {target_id}"
 
     elif action_type == "discard":
         card_index = action.get("card_index", 0)
