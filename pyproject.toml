@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hanabi-agents"
 version = "0.1.0"
-description = "AI agents playing Hanabi with pre-action discussion"
+description = "A clean implementation of the Hanabi card game engine"
 readme = "README.md"
 authors = [
     {name = "Adam Fletcher", email = "example@example.com"}
@@ -18,15 +18,9 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "langchain",
-    "langchain-openai",
-    "langgraph",
     "pydantic",
     "python-dotenv",
-    "rich",
-    "typing-extensions",
-    "openai",
-    "pytest",
+    "pytest-cov"
 ]
 
 [project.optional-dependencies]
@@ -42,7 +36,7 @@ test = [
 ]
 
 [tool.setuptools]
-packages = ["src"]
+packages = ["hanabi_agents"]
 
 [tool.black]
 line-length = 88

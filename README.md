@@ -1,78 +1,87 @@
-# Hanabi AI Agents
+# Hanabi Game Engine
 
-A Python implementation of the Hanabi card game played by AI agents using Langgraph. The game features a unique pre-action discussion phase where agents collaborate to make optimal moves.
+A clean implementation of the Hanabi card game engine, designed as a foundation for AI agent development.
 
-## Features
+## Overview
 
-- Turn-based Hanabi game with 5 AI agents
-- Pre-action discussion phase for collaborative decision-making
-- Secure information flow (private vs public information)
-- Langgraph-based AI reasoning
-- Comprehensive game state management
-- Detailed logging and debugging support
+This repository provides a clean implementation of the Hanabi card game engine, focusing on:
+
+- Clear separation of game logic from agent implementation
+- Well-documented code with type hints
+- Flexible architecture for future agent development
+- Support for future integration with LangGraph, tool calling, and checkpoints
+
+## Game Rules
+
+Hanabi is a cooperative card game where players work together to create five firework stacks (one for each color) in ascending order (1-5). The unique twist is that players cannot see their own cards but can see everyone else's cards. Players must give each other clues to help identify cards, but clues are limited resources.
+
+### Key Game Mechanics
+
+- **Hidden Information**: Players cannot see their own cards but can see all other players' cards
+- **Limited Communication**: Players can only give specific types of clues (color or number)
+- **Resource Management**: Clue tokens (8) and fuse tokens (3) limit actions
+- **Cooperative Goal**: Build five complete firework stacks (1-5 in each color)
 
 ## Project Structure
 
 ```
-hanabi-agents/
-├── src/
-│   ├── game/           # Core game logic
-│   ├── agents/         # AI agent implementations
-│   ├── communication/  # Discussion phase management
-│   └── utils/          # Utility functions
-├── tests/              # Test suite (future)
-└── docs/              # Documentation
+hanabi_agents/
+├── game/               # Core game logic
+│   ├── state.py        # Game state representation
+│   └── engine.py       # Game execution engine
+└── utils/              # Utility functions
+    └── logging.py      # Logging utilities
 ```
 
-## Installation
+## Game Engine Features
 
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/hanabi-agents.git
-cd hanabi-agents
-```
+The game engine provides:
 
-2. Create and activate a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+- Complete implementation of Hanabi game rules
+- Game state management with proper information hiding
+- Action validation and execution
+- Score tracking and game completion detection
+- Comprehensive logging
 
-3. Install dependencies:
-```bash
-pip install -e .
-```
+## Game State
 
-## Usage
+The `GameState` class represents the complete state of a Hanabi game, including:
 
-```python
-from src.game.engine import GameEngine
-from src.agents.ai_agent import AIAgent
+- Deck of cards
+- Player hands
+- Firework piles
+- Discard pile
+- Game resources (clue tokens, fuse tokens)
+- Game progress tracking (score, turn count)
+- Action history
 
-# Create agents
-agents = [AIAgent(i) for i in range(5)]
+## Actions
 
-# Initialize and run game
-engine = GameEngine(agents)
-final_score = engine.play_game()
-```
+The game supports three types of actions:
 
-## Development
+1. **Play Card**: Attempt to play a card to a firework pile
+   ```python
+   {"type": "play_card", "card_index": 0}
+   ```
 
-The project uses:
-- Python 3.9+
-- Langgraph for AI agent management
-- Pydantic for data validation
-- Rich for terminal output
+2. **Give Clue**: Give a clue to another player
+   ```python
+   {"type": "give_clue", "target_id": 1, "clue": {"type": "color", "value": "red"}}
+   ```
 
-## Contributing
+3. **Discard**: Discard a card to gain a clue token
+   ```python
+   {"type": "discard", "card_index": 0}
+   ```
 
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+## Future Plans
+
+- Integration with LangGraph for agent reasoning
+- Tool calling for agent actions
+- Checkpoints for agent memory
+- Advanced agent implementations
+- Evaluation framework for comparing agents
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+[MIT License](LICENSE) 
