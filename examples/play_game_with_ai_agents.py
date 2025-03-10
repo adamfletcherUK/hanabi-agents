@@ -75,7 +75,7 @@ def main():
 
     while not game_over and turn_count < max_turns:
         # Get the current game state
-        game_state = engine.get_game_summary()
+        game_state = engine.get_game_state()
 
         # Get the current player
         current_player_id = game_state.current_player
@@ -129,7 +129,7 @@ def main():
         turn_count += 1
 
     # Print the final state
-    game_state = engine.get_game_summary()
+    game_state = engine.get_game_state()
     logger.info("=== Game Over ===")
     logger.info(f"Final score: {game_state.score}/25")
     logger.info(f"Reason: {engine.get_game_over_reason()}")
