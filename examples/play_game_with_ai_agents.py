@@ -117,19 +117,22 @@ def log_agent_reasoning(agent, turn_count, print_to_console=True):
             logger.info(
                 f"Found {len(thoughts)} thoughts in agent's memory")
 
-            # Log each thought in the reasoning chain to file
+            # Log each thought in the reasoning chain to file only
             logger.info(
                 f"🧠 REASONING CHAIN FOR AGENT {agent.agent_id} (Turn {turn_count}):")
             for i, thought in enumerate(thoughts):
                 logger.info(f"Thought {i+1}: {thought}")
 
-            # Print to console if requested - but only a simplified version
-            if print_to_console:
+            # Print to console if requested - but only if we haven't already shown thoughts
+            # We'll skip this if we've already shown thoughts during the analysis phase
+            if print_to_console and not hasattr(agent, '_thoughts_displayed_for_turn') or agent._thoughts_displayed_for_turn != turn_count:
                 # Use a different format for console to avoid duplication
                 console_logger.info(
                     f"\n🧠 REASONING CHAIN FOR AGENT {agent.agent_id} (Turn {turn_count}):")
                 for i, thought in enumerate(thoughts):
                     console_logger.info(f"  Thought {i+1}: {thought}")
+                # Mark that we've displayed thoughts for this turn
+                agent._thoughts_displayed_for_turn = turn_count
         else:
             logger.warning(
                 f"No thoughts found for agent {agent.agent_id} in turn {turn_count}")
@@ -235,6 +238,15 @@ def main():
         console_logger.info(
             "Please set your OPENAI_API_KEY in the .env file or environment")
         return
+
+    # Suppress detailed model debugging in console
+    # Set higher log level for OpenAI and LangChain libraries to suppress detailed logs
+    logging.getLogger("openai").setLevel(logging.WARNING)
+    logging.getLogger("langchain").setLevel(logging.WARNING)
+    logging.getLogger("langchain_core").setLevel(logging.WARNING)
+    logging.getLogger("langgraph").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     # Create the game engine
     logger.info(f"Creating game engine with {num_players} players")
@@ -358,11 +370,44 @@ def main():
                                 f"Extracted thoughts for agent {active_agent.agent_id} (Turn {turn_count + 1}):")
                             for j, thought in enumerate(thoughts):
                                 logger.debug(f"  Thought {j+1}: {thought}")
+
+                            # ADDED: Display thoughts to console in a clean format
+                            console_logger.info("\n💭 AGENT THOUGHTS:")
+                            for j, thought in enumerate(thoughts):
+                                console_logger.info(f"  • {thought}")
+
+                            # Mark that we've displayed thoughts for this turn
+                            active_agent._thoughts_displayed_for_turn = turn_count + 1
                         else:
                             logger.debug(
                                 f"No thoughts could be extracted from the LLM output for agent {active_agent.agent_id}")
                             console_logger.info(
                                 "\n⚠️ No thoughts could be extracted from the LLM output")
+
+                    # ADDED: Display the raw LLM output for the action proposal step
+                    elif i == 5:  # Fifth response (index 5) is action proposal
+                        console_logger.info("\n🔍 ACTION REASONING:")
+                        # Extract and display a condensed version of the action reasoning
+                        action_lines = []
+                        for line in content.strip().split("\n"):
+                            line = line.strip()
+                            if line and "I will" in line:
+                                action_lines.append(line)
+                            elif line and "because" in line.lower() and len(line) < 200:
+                                action_lines.append(line)
+
+                        if action_lines:
+                            for line in action_lines:
+                                console_logger.info(f"  • {line}")
+                        else:
+                            # If no specific action lines found, show the first few lines
+                            content_lines = content.strip().split("\n")
+                            # Only show first 2 lines
+                            for line in content_lines[:2]:
+                                if line.strip():
+                                    console_logger.info(f"  • {line.strip()}")
+                        # No need for separator line
+
                 # Also log input prompts to file only
                 elif hasattr(msg, 'content') and i % 2 == 0:
                     content = msg.content
@@ -386,20 +431,25 @@ def main():
         action = current_agent.decide_action(game_state, "")
         logger.info(f"Action decided: {action}")
 
-        # Log the agent's reasoning chain
-        log_agent_reasoning(current_agent, turn_count + 1)
+        # Log the agent's reasoning chain - but only to the file, not to the console
+        log_agent_reasoning(current_agent, turn_count +
+                            1, print_to_console=False)
 
-        # Log the agent's thoughts to file only
-        current_thoughts = current_agent.get_memory_from_store(
-            "current_thoughts", [])
-        if current_thoughts:
-            logger.info(
-                f"Agent {current_agent.agent_id}'s thoughts for turn {turn_count + 1}:")
-            for i, thought in enumerate(current_thoughts):
-                logger.info(f"  Thought {i+1}: {thought}")
-        else:
-            logger.warning(
-                f"No thoughts found for agent {current_agent.agent_id} in turn {turn_count + 1}")
+        # Log the agent's thoughts to file only if they haven't been logged already
+        # This is to avoid redundancy in the log file
+        if not hasattr(current_agent, '_thoughts_logged_for_turn') or current_agent._thoughts_logged_for_turn != turn_count + 1:
+            current_thoughts = current_agent.get_memory_from_store(
+                "current_thoughts", [])
+            if current_thoughts:
+                logger.info(
+                    f"Agent {current_agent.agent_id}'s thoughts for turn {turn_count + 1}:")
+                for i, thought in enumerate(current_thoughts):
+                    logger.info(f"  Thought {i+1}: {thought}")
+                # Mark that we've logged thoughts for this turn
+                current_agent._thoughts_logged_for_turn = turn_count + 1
+            else:
+                logger.warning(
+                    f"No thoughts found for agent {current_agent.agent_id} in turn {turn_count + 1}")
 
         # Display the formatted action with better highlighting
         action_display = game_logger.format_action_for_display(

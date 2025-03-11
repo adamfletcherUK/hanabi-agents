@@ -5,10 +5,28 @@ from ...game.state import GameState, Color
 
 
 class GiveClueInput(BaseModel):
-    target_id: int = Field(description="ID of the player to give the clue to")
+    """Schema for giving a clue to another player."""
+    target_id: int = Field(
+        description="ID of the player to give the clue to",
+        ge=0  # greater than or equal to 0
+    )
     clue_type: Literal["color", "number"] = Field(
-        description="Type of clue to give (color or number)")
-    clue_value: str = Field(description="Value of the clue (e.g., 'red', '1')")
+        description="Type of clue to give (color or number)"
+    )
+    clue_value: str = Field(
+        description="Value of the clue (e.g., 'red', '1')"
+    )
+
+
+class GiveClueOutput(BaseModel):
+    """Schema for the output of giving a clue."""
+    success: bool = Field(description="Whether the action was successful")
+    error: str = Field(
+        default="", description="Error message if the action failed")
+    action_type: str = Field(
+        default="give_clue", description="Type of action performed")
+    clue_info: str = Field(
+        default="", description="Information about the given clue")
 
 
 @tool(args_schema=GiveClueInput)
@@ -22,14 +40,21 @@ def give_clue_tool(target_id: int, clue_type: str, clue_value: str) -> Dict[str,
         clue_value: Value of the clue (e.g., 'red', '1')
 
     Returns:
-        Dictionary with the result of the action
+        Dictionary with the result of the action, including:
+        - success: Whether the action was successful
+        - error: Error message if the action failed
+        - action_type: Type of action performed
+        - clue_info: Information about the given clue
     """
     # This function will be called with the agent_id and game_state from the graph
     # We'll implement a wrapper in the graph to provide these values
 
     # The actual implementation will be in _give_clue_impl
     # This is just a placeholder that will be properly bound in the graph
-    return {"success": False, "error": "Tool not properly bound to agent and game state"}
+    return GiveClueOutput(
+        success=False,
+        error="Tool not properly bound to agent and game state"
+    ).dict()
 
 
 def _give_clue_impl(agent_id: int, target_id: int, clue_type: str, clue_value: str, game_state: GameState) -> Dict[str, Any]:
@@ -47,67 +72,53 @@ def _give_clue_impl(agent_id: int, target_id: int, clue_type: str, clue_value: s
         Dictionary with the result of the action
     """
     # Validate the action
-    if not game_state.is_valid_move(agent_id, "clue", target_id=target_id, clue_type=clue_type, clue_value=clue_value):
-        # Check for specific error conditions
-        if game_state.clue_tokens <= 0:
-            return {
-                "success": False,
-                "error": "Cannot give clue: no clue tokens available",
-                "action_type": "clue"
-            }
+    if game_state.clue_tokens <= 0:
+        return GiveClueOutput(
+            success=False,
+            error="No clue tokens available",
+            action_type="give_clue"
+        ).dict()
 
-        if target_id == agent_id:
-            return {
-                "success": False,
-                "error": "Cannot give clue to yourself",
-                "action_type": "clue"
-            }
+    if target_id == agent_id:
+        return GiveClueOutput(
+            success=False,
+            error="Cannot give clue to yourself",
+            action_type="give_clue"
+        ).dict()
 
-        if target_id not in game_state.hands:
-            return {
-                "success": False,
-                "error": f"Invalid target player: {target_id}",
-                "action_type": "clue"
-            }
+    if target_id not in game_state.hands:
+        return GiveClueOutput(
+            success=False,
+            error=f"Invalid target player: {target_id}",
+            action_type="give_clue"
+        ).dict()
 
-        # Check if the clue would affect any cards
-        target_hand = game_state.hands.get(target_id, [])
-        affected_cards = []
+    target_hand = game_state.hands[target_id]
+    if not target_hand:
+        return GiveClueOutput(
+            success=False,
+            error=f"Player {target_id} has no cards",
+            action_type="give_clue"
+        ).dict()
 
-        for i, card in enumerate(target_hand):
-            if (clue_type == "color" and card.color.value == clue_value) or \
-               (clue_type == "number" and str(card.number) == str(clue_value)):
-                affected_cards.append(i)
-
-        if not affected_cards:
-            return {
-                "success": False,
-                "error": f"Clue {clue_type}={clue_value} wouldn't affect any cards in player {target_id}'s hand",
-                "action_type": "clue"
-            }
-
-        # Generic error for other cases
-        return {
-            "success": False,
-            "error": f"Invalid clue action: target_id={target_id}, clue_type={clue_type}, clue_value={clue_value}",
-            "action_type": "clue"
-        }
-
-    # Get the affected cards
-    target_hand = game_state.hands.get(target_id, [])
-    affected_cards = []
-
-    for i, card in enumerate(target_hand):
+    # Check if the clue matches any cards
+    matches = False
+    for card in target_hand:
         if (clue_type == "color" and card.color.value == clue_value) or \
            (clue_type == "number" and str(card.number) == str(clue_value)):
-            affected_cards.append(i)
+            matches = True
+            break
 
-    return {
-        "success": True,
-        "action_type": "clue",
-        "target_id": target_id,
-        "clue_type": clue_type,
-        "clue_value": clue_value,
-        "affected_cards": affected_cards,
-        "message": f"Giving {clue_type} clue about {clue_value} to player {target_id}, affecting cards at positions {affected_cards}"
-    }
+    if not matches:
+        return GiveClueOutput(
+            success=False,
+            error=f"No {clue_type} {clue_value} cards in player {target_id}'s hand",
+            action_type="give_clue"
+        ).dict()
+
+    return GiveClueOutput(
+        success=True,
+        action_type="give_clue",
+        clue_info=f"Gave {clue_type} clue {clue_value} to player {target_id}",
+        error=""
+    ).dict()

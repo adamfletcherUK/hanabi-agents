@@ -86,6 +86,11 @@ You have access to the following tools:
 
 3. discard_tool: Discard a card from your hand
    - card_index: Index of the card to discard (0-indexed)
+
+IMPORTANT: You MUST use the EXACT tool names as specified above:
+- Use "play_card_tool" (not "play", "play_card", etc.)
+- Use "give_clue_tool" (not "clue", "give_clue", etc.)
+- Use "discard_tool" (not "discard", "discard_card", etc.)
 """
 
     # Add a clear warning about discarding when at max clue tokens
@@ -100,19 +105,32 @@ You have access to the following tools:
     prompt += """
 ## Action Proposal Task
 
-Based on your analysis and thoughts, you must call ONE of the available tools to take an action in the game.
+Based on your analysis and thoughts, you must provide a structured JSON response with your chosen action.
+
+Your response should follow this structure:
+```json
+{
+  "action_type": "one of: play_card_tool, give_clue_tool, discard_tool",
+  "explanation": "Detailed explanation of how this action addresses each of your thoughts",
+  "parameters": {
+    // For play_card_tool or discard_tool:
+    "card_index": 0, // Index of the card (0-4)
+    
+    // For give_clue_tool:
+    "target_id": 1, // ID of the player to give a clue to
+    "clue_type": "color or number", // Type of clue
+    "clue_value": "red, blue, green, yellow, white OR 1, 2, 3, 4, 5" // Value of the clue
+  }
+}
+```
 
 IMPORTANT: 
-- You MUST call a tool - responding with natural language only is not allowed.
-- Your tool call MUST directly address your strategic thoughts listed above.
-- For EACH thought, explain how your chosen action addresses or relates to that thought.
-- Your action should be the logical conclusion of your strategic reasoning.
-- When giving clues, make sure the clue will actually affect at least one card in the target player's hand.
-- Check the "Valid clues" section above to ensure your clue is valid.
-- You MUST use one of the tools above - do not respond with natural language.
-- Only call ONE tool.
-
-Before calling the tool, provide a brief explanation of how your chosen action addresses each of your thoughts, numbered to match the thought list above.
+- You MUST provide a valid JSON object with the exact structure shown above
+- Your action_type MUST be one of: "play_card_tool", "give_clue_tool", or "discard_tool"
+- Your parameters must match the action type (card_index for play/discard, target_id/clue_type/clue_value for clues)
+- Your explanation should address each of your thoughts, numbered to match the thought list above
+- When giving clues, make sure the clue will actually affect at least one card in the target player's hand
+- Check the "Valid clues" section above to ensure your clue is valid
 """
 
     # Add error information if available

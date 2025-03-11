@@ -4,6 +4,14 @@ import logging
 from ..prompts.state_analysis import create_state_analysis_prompt
 from ..prompts.thought_generation import create_thought_generation_prompt
 from ..prompts.action_proposal import create_action_proposal_prompt
+import json
+import uuid
+import re
+import hashlib
+from ..state.agent_state import AgentStateDict, ActionError, ActionResult
+from ..tools.play_card import _play_card_impl
+from ..tools.give_clue import _give_clue_impl
+from ..tools.discard import _discard_impl
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -11,53 +19,64 @@ logger = logging.getLogger(__name__)
 
 def analyze_game_state(
     state: Dict[str, Any],
-    model,
-    agent_id: int,
-    memory: Dict[str, Any],
-    config=None
+    config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Analyze the current game state.
-
-    This node analyzes the game state, including the player's hand, other players' hands,
-    firework piles, discard pile, and available resources.
+    Analyze the game state and extract relevant information.
 
     Args:
-        state: Current state of the reasoning graph
-        model: Language model to use for analysis
-        agent_id: ID of the agent
-        memory: Agent's memory
-        config: Configuration
+        state: The current state
+        config: Optional configuration containing model, agent_id, and agent_instance
 
     Returns:
-        Updated state with analysis results
+        Updated state with analysis
     """
-    logger.info(f"Analyzing game state for agent {agent_id}")
+    # Extract parameters from config
+    if config is None:
+        config = {}
+
+    # Debug logging
+    logger.info(
+        f"analyze_game_state called with state keys: {list(state.keys())}")
+    logger.info(
+        f"analyze_game_state called with config keys: {list(config.keys())}")
+
+    model = config.get("model")
+    agent_id = config.get("agent_id")
+    agent_instance = config.get("agent_instance")
+
+    # Debug logging
+    logger.info(f"model from config: {model}")
+    logger.info(f"agent_id from config: {agent_id}")
+    logger.info(f"agent_id from state: {state.get('agent_id')}")
+
+    if not model:
+        raise ValueError("Model not provided in config")
+
+    # Fix: Properly handle agent_id
+    if agent_id is None:
+        agent_id = state.get("agent_id")
+
+    if agent_id is None:
+        raise ValueError("Agent ID not provided in config or state")
+
+    logger.info(f"Agent {agent_id} analyzing game state")
 
     # Create a copy of the state to avoid modifying the original
     new_state = state.copy()
 
     # Track the execution path
     execution_path = new_state.get("execution_path", [])
-    execution_path.append("analyze_state")
+    execution_path.append("analyze_game_state")
     new_state["execution_path"] = execution_path
 
-    # Get the game state
-    game_state = new_state.get("game_state")
-    if game_state is None:
-        logger.error("No game state found in state")
-        return new_state
+    # Get the game state, card knowledge, discussion history, and game history from the state
+    game_state = state.get("game_state", {})
+    card_knowledge = state.get("card_knowledge", {})
+    discussion_history = state.get("discussion_history", [])
+    game_history = state.get("game_history", [])
 
-    # Get the card knowledge
-    card_knowledge = new_state.get("card_knowledge", [])
-
-    # Get the discussion history
-    discussion_history = new_state.get("discussion_history", [])
-
-    # Get the game history
-    game_history = new_state.get("game_history", [])
-
-    # Create the prompt
+    # Create the prompt for state analysis
     prompt = create_state_analysis_prompt(
         game_state=game_state,
         agent_id=agent_id,
@@ -66,46 +85,71 @@ def analyze_game_state(
         game_history=game_history
     )
 
-    # Create the message
+    # Log the prompt for debugging
+    logger.debug(f"State analysis prompt: {prompt}")
+
+    # Create a human message with the prompt
     message = HumanMessage(content=prompt)
 
-    # Get the analysis from the model
+    # Send the message to the model
     response = model.invoke([message])
 
-    # Add the messages to the state
-    messages = new_state.get("messages", [])
-    messages.append(message)
-    messages.append(response)
-    new_state["messages"] = messages
+    # Log the response for debugging
+    logger.debug(f"State analysis response: {response}")
+
+    # Add the response to the messages
+    if "messages" not in new_state:
+        new_state["messages"] = []
+    new_state["messages"].append(response)
 
     return new_state
 
 
 def generate_thoughts(
     state: Dict[str, Any],
-    model,
-    agent_id: int,
-    memory: Dict[str, Any],
-    config=None
+    config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Generate strategic thoughts based on the game state analysis.
 
-    This node generates thoughts about the current game state, including
-    what cards the agent might have, what actions would be beneficial,
-    and what other players might be trying to communicate.
-
     Args:
-        state: Current state of the reasoning graph
-        model: Language model to use for thought generation
-        agent_id: ID of the agent
-        memory: Agent's memory
-        config: Configuration
+        state: The current state
+        config: Optional configuration containing thought_model, agent_id, and agent_instance
 
     Returns:
         Updated state with generated thoughts
     """
-    logger.info(f"Generating thoughts for agent {agent_id}")
+    # Extract parameters from config
+    if config is None:
+        config = {}
+
+    # Debug logging
+    logger.info(
+        f"generate_thoughts called with state keys: {list(state.keys())}")
+    logger.info(
+        f"generate_thoughts called with config keys: {list(config.keys())}")
+
+    # Use thought_model if available, otherwise use regular model
+    model = config.get("thought_model", config.get("model"))
+    agent_id = config.get("agent_id")
+    agent_instance = config.get("agent_instance")
+
+    # Debug logging
+    logger.info(f"model from config: {model}")
+    logger.info(f"agent_id from config: {agent_id}")
+    logger.info(f"agent_id from state: {state.get('agent_id')}")
+
+    if not model:
+        raise ValueError("Model not provided in config")
+
+    # Fix: Properly handle agent_id
+    if agent_id is None:
+        agent_id = state.get("agent_id")
+
+    if agent_id is None:
+        raise ValueError("Agent ID not provided in config or state")
+
+    logger.info(f"Agent {agent_id} generating thoughts")
 
     # Create a copy of the state to avoid modifying the original
     new_state = state.copy()
@@ -115,291 +159,150 @@ def generate_thoughts(
     execution_path.append("generate_thoughts")
     new_state["execution_path"] = execution_path
 
-    # Get the game state
-    game_state = new_state.get("game_state")
-    if game_state is None:
-        logger.error("No game state found in state")
-        return new_state
+    # Get the game state, card knowledge, discussion history, and game history from the state
+    game_state = state.get("game_state", {})
+    card_knowledge = state.get("card_knowledge", {})
+    discussion_history = state.get("discussion_history", [])
+    game_history = state.get("game_history", [])
 
-    # Get the card knowledge
-    card_knowledge = new_state.get("card_knowledge", [])
+    # Get any recent errors
+    recent_errors = state.get("errors", [])
 
-    # Get the discussion history
-    discussion_history = new_state.get("discussion_history", [])
-
-    # Get the game history
-    game_history = new_state.get("game_history", [])
-
-    # Get the messages from the previous step
-    messages = new_state.get("messages", [])
-
-    # Get any errors from previous actions
-    errors = new_state.get("errors", [])
-    recent_errors = errors[-3:] if errors else []
-
-    # Create the prompt
+    # Create the prompt for thought generation
     prompt = create_thought_generation_prompt(
         game_state=game_state,
         agent_id=agent_id,
         card_knowledge=card_knowledge,
         discussion_history=discussion_history,
         game_history=game_history,
-        previous_analysis=messages[-1].content if len(messages) >= 1 else None,
         recent_errors=recent_errors
     )
 
-    # Create the message
+    # Log the prompt for debugging
+    logger.debug(f"Thought generation prompt: {prompt}")
+
+    # Check if the model has tool_choice set to "required"
+    has_required_tools = _has_required_tools(model)
+
+    # Temporarily disable tool_choice if it's set to "required"
+    if has_required_tools:
+        logger.info("Temporarily disabling tool_choice for thought generation")
+        # Create a copy of the model without tool_choice
+        if hasattr(model, "bind"):
+            temp_model = model.bind(tool_choice=None)
+        else:
+            temp_model = model  # Fallback if bind is not available
+    else:
+        temp_model = model
+
+    # Create a human message with the prompt
     message = HumanMessage(content=prompt)
 
-    # Get the thoughts from the model
-    response = model.invoke([message])
+    try:
+        # Send the message to the model
+        response = temp_model.invoke([message])
 
-    # Add the messages to the state
-    messages.append(message)
-    messages.append(response)
-    new_state["messages"] = messages
+        # Log the response for debugging
+        logger.debug(f"Thought generation response: {response}")
 
-    # Extract the thoughts from the response
-    thoughts = _extract_thoughts(response.content)
+        # Add the response to the messages
+        if "messages" not in new_state:
+            new_state["messages"] = []
+        new_state["messages"].append(response)
+
+        # Extract the thoughts from the response
+        thoughts = _extract_thoughts(response.content)
+
+        # If no thoughts were extracted, create a default thought
+        if not thoughts:
+            logger.warning(
+                "No thoughts extracted from response, creating default thought")
+            thoughts = [
+                "I need to analyze the current game state and determine the best action."]
+    except Exception as e:
+        logger.error(f"Error generating thoughts: {e}")
+        thoughts = [
+            "I need to analyze the current game state and determine the best action."]
+
+    # Store the thoughts in the state
     new_state["current_thoughts"] = thoughts
 
-    # Log the extracted thoughts
-    logger.info(f"Extracted thoughts for agent {agent_id}:")
-    for i, thought in enumerate(thoughts):
-        logger.info(f"  Thought {i+1}: {thought}")
-
-    # Log the state keys for debugging
-    logger.info(
-        f"State keys after thought generation: {list(new_state.keys())}")
-    logger.info(f"Number of thoughts generated: {len(thoughts)}")
+    # Log the thoughts for debugging
+    logger.info(f"Generated thoughts: {thoughts}")
+    logger.debug(f"State keys: {new_state.keys()}")
 
     # Store a hash of the thoughts for tracking
-    import hashlib
     thoughts_hash = hashlib.md5(str(thoughts).encode()).hexdigest()
     new_state["thoughts_hash"] = thoughts_hash
-    logger.info(f"Thoughts hash: {thoughts_hash}")
 
     return new_state
 
 
-def _validate_tool_call_consistency(tool_call: Dict[str, Any], thoughts: List[str]) -> bool:
+def _validate_tool_call_consistency(tool_call, thoughts):
     """
-    Validate that the tool call is consistent with the thoughts.
+    Validate that the tool call is consistent with the agent's thoughts.
 
     Args:
         tool_call: The tool call to validate
-        thoughts: The thoughts to validate against
+        thoughts: The agent's current thoughts as a list of strings
 
     Returns:
-        True if the tool call is consistent with the thoughts, False otherwise
+        bool: True if the tool call is consistent with the thoughts, False otherwise
     """
     if not tool_call or not thoughts:
-        return False
+        return True  # Can't validate without both pieces
 
     tool_name = tool_call.get("name", "")
     tool_args = tool_call.get("args", {})
 
-    # Extract key concepts from thoughts
-    thought_concepts = []
-    for thought in thoughts:
-        thought_lower = thought.lower()
+    # Join thoughts into a single string and convert to lowercase for case-insensitive matching
+    thoughts_text = " ".join(thoughts) if isinstance(
+        thoughts, list) else thoughts
+    thoughts_lower = thoughts_text.lower() if thoughts_text else ""
 
-        # Check for concepts related to giving clues
-        if any(term in thought_lower for term in ["clue", "hint", "information", "tell", "inform"]):
-            thought_concepts.append("give_clue")
+    # Check for basic consistency based on tool type
+    if tool_name == "play_card_tool":
+        # Check if thoughts mention playing a card
+        play_indicators = ["play", "playing",
+                           "should play", "can play", "safe to play"]
+        card_index = tool_args.get("card_index")
 
-            # Check for specific clue types
-            if "color" in thought_lower:
-                thought_concepts.append("color_clue")
-            if any(str(num) in thought_lower for num in range(1, 6)):
-                thought_concepts.append("number_clue")
-                # Extract specific numbers mentioned
-                for num in range(1, 6):
-                    if str(num) in thought_lower:
-                        thought_concepts.append(f"number_{num}")
+        # Check if any play indicators are in the thoughts
+        has_play_intent = any(
+            indicator in thoughts_lower for indicator in play_indicators)
 
-        # Check for concepts related to playing cards
-        if any(term in thought_lower for term in ["play", "playable", "safe to play"]):
-            thought_concepts.append("play_card")
+        # Check if the specific card index is mentioned
+        card_mentioned = f"card {card_index}" in thoughts_lower or f"position {card_index}" in thoughts_lower
 
-        # Check for concepts related to discarding
-        if any(term in thought_lower for term in ["discard", "throw", "get rid"]):
-            thought_concepts.append("discard")
+        return has_play_intent
 
-    # Check if the tool call matches any of the thought concepts
-    if tool_name == "play_card_tool" and "play_card" in thought_concepts:
-        return True
+    elif tool_name == "discard_tool":
+        # Check if thoughts mention discarding
+        discard_indicators = ["discard", "discarding",
+                              "should discard", "can discard", "safe to discard"]
+
+        # Check if any discard indicators are in the thoughts
+        return any(indicator in thoughts_lower for indicator in discard_indicators)
+
     elif tool_name == "give_clue_tool":
-        if "give_clue" in thought_concepts:
-            # Check for more specific clue type consistency
-            clue_type = tool_args.get("clue_type", "")
-            clue_value = tool_args.get("clue_value", "")
+        # Check if thoughts mention giving a clue
+        clue_indicators = ["clue", "hint",
+                           "give information", "inform", "tell"]
+        clue_type = tool_args.get("clue_type", "").lower()
+        clue_value = tool_args.get("clue_value", "").lower()
 
-            if clue_type == "color" and "color_clue" in thought_concepts:
-                return True
-            elif clue_type == "number" and "number_clue" in thought_concepts:
-                # Check for specific number consistency
-                if f"number_{clue_value}" in thought_concepts:
-                    return True
-                return "number_clue" in thought_concepts
+        # Check if any clue indicators are in the thoughts
+        has_clue_intent = any(
+            indicator in thoughts_lower for indicator in clue_indicators)
 
-            # If no specific clue type mentioned in thoughts, any clue is consistent
-            return True
-    elif tool_name == "discard_tool" and "discard" in thought_concepts:
-        return True
+        # Check if the specific clue type or value is mentioned
+        type_mentioned = clue_type in thoughts_lower
+        value_mentioned = clue_value in thoughts_lower
 
-    # If no specific action concepts found in thoughts, consider it inconsistent
-    return False
+        return has_clue_intent and (type_mentioned or value_mentioned)
 
-
-def _map_thoughts_to_actions(thoughts: List[str]) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Map thoughts to potential actions.
-
-    Args:
-        thoughts: List of thoughts to map
-
-    Returns:
-        Dictionary mapping action types to potential actions
-    """
-    # Initialize action map with the official tool names
-    action_map = {
-        "play_card_tool": [],
-        "give_clue_tool": [],
-        "discard_tool": []
-    }
-
-    for thought in thoughts:
-        thought_lower = thought.lower()
-
-        # Check for play card actions
-        if any(term in thought_lower for term in ["play", "playable", "safe to play"]):
-            # Try to extract card indices
-            card_indices = []
-            for i in range(5):  # Assuming max 5 cards in hand
-                if f"card {i}" in thought_lower or f"position {i}" in thought_lower:
-                    card_indices.append(i)
-
-            # If no specific card mentioned, consider all cards
-            if not card_indices:
-                card_indices = list(range(5))
-
-            for card_index in card_indices:
-                action_map["play_card_tool"].append({
-                    "card_index": card_index,
-                    "thought": thought
-                })
-
-        # Check for give clue actions
-        if any(term in thought_lower for term in ["clue", "hint", "tell", "inform"]):
-            # Try to extract target player
-            target_ids = []
-            for i in range(5):  # Assuming max 5 players
-                if f"player {i}" in thought_lower:
-                    target_ids.append(i)
-
-            # If no specific player mentioned, consider all players
-            if not target_ids:
-                target_ids = list(range(5))
-
-            # Try to extract clue type
-            clue_types = []
-            if any(term in thought_lower for term in ["color", "red", "blue", "green", "yellow", "white"]):
-                clue_types.append("color")
-            if any(term in thought_lower for term in ["number", "1", "2", "3", "4", "5"]):
-                clue_types.append("number")
-
-            # If no specific clue type mentioned, consider both
-            if not clue_types:
-                clue_types = ["color", "number"]
-
-            # Try to extract clue value
-            clue_values = []
-            # Check for colors
-            for color in ["red", "blue", "green", "yellow", "white"]:
-                if color in thought_lower:
-                    clue_values.append(color)
-            # Check for numbers
-            for number in ["1", "2", "3", "4", "5"]:
-                if number in thought_lower:
-                    clue_values.append(number)
-
-            # If no specific clue value mentioned, consider all
-            if not clue_values:
-                clue_values = ["red", "1"]  # Default values
-
-            for target_id in target_ids:
-                for clue_type in clue_types:
-                    for clue_value in clue_values:
-                        if (clue_type == "color" and clue_value in ["red", "blue", "green", "yellow", "white"]) or \
-                           (clue_type == "number" and clue_value in [str(i) for i in range(1, 6)]):
-                            action_map["give_clue_tool"].append({
-                                "target_id": target_id,
-                                "clue_type": clue_type,
-                                "clue_value": clue_value,
-                                "thought": thought
-                            })
-
-        # Check for discard actions
-        if any(term in thought_lower for term in ["discard", "throw", "get rid"]):
-            # Try to extract card indices
-            card_indices = []
-            for i in range(5):  # Assuming max 5 cards in hand
-                if f"card {i}" in thought_lower or f"position {i}" in thought_lower:
-                    card_indices.append(i)
-
-            # If no specific card mentioned, consider all cards
-            if not card_indices:
-                card_indices = list(range(5))
-
-            for card_index in card_indices:
-                action_map["discard_tool"].append({
-                    "card_index": card_index,
-                    "thought": thought
-                })
-
-    return action_map
-
-
-def _check_tool_call_against_action_map(tool_call: Dict[str, Any], action_map: Dict[str, List[Dict[str, Any]]]) -> Tuple[bool, str]:
-    """
-    Check if a tool call is consistent with the action map.
-
-    Args:
-        tool_call: The tool call to check
-        action_map: The action map to check against
-
-    Returns:
-        Tuple of (is_consistent, reason)
-    """
-    if not tool_call:
-        return False, "No tool call provided"
-
-    tool_name = tool_call.get("name", "")
-    tool_args = tool_call.get("args", {})
-
-    # Check if the tool name is in the action map
-    if tool_name not in action_map:
-        return False, f"Tool name {tool_name} not in action map"
-
-    # Check if there are any potential actions for this tool
-    if not action_map[tool_name]:
-        return False, f"No potential actions for {tool_name} in action map"
-
-    # Check if the tool args match any potential action
-    for potential_action in action_map[tool_name]:
-        is_match = True
-
-        # Check each arg in the tool call
-        for arg_name, arg_value in tool_args.items():
-            if arg_name in potential_action and str(potential_action[arg_name]) != str(arg_value):
-                is_match = False
-                break
-
-        if is_match:
-            return True, f"Tool call matches potential action derived from thought: {potential_action.get('thought', 'Unknown')}"
-
-    return False, f"Tool call {tool_call} does not match any potential action in the action map"
+    # Default to True for unknown tool types
+    return True
 
 
 def _normalize_tool_name(tool_name: str) -> str:
@@ -410,163 +313,223 @@ def _normalize_tool_name(tool_name: str) -> str:
         tool_name: The tool name to normalize
 
     Returns:
-        Normalized tool name
+        The normalized tool name
     """
-    # Map of alternative tool names to official tool names
+    # Map of common variations to official tool names
     tool_name_map = {
         "play_card": "play_card_tool",
         "give_clue": "give_clue_tool",
-        "discard": "discard_tool"
+        "discard": "discard_tool",
+        "play": "play_card_tool",
+        "clue": "give_clue_tool",
     }
 
-    # Return the normalized name if it's in the map, otherwise return the original
-    return tool_name_map.get(tool_name, tool_name)
+    # Convert to lowercase for case-insensitive matching
+    lower_tool_name = tool_name.lower()
+
+    # Check if the tool name is in the map
+    for key, value in tool_name_map.items():
+        if key in lower_tool_name:
+            return value
+
+    # If not found in the map, return the original
+    return tool_name
+
+
+def _has_required_tools(model) -> bool:
+    """
+    Check if the model has the required tools defined.
+
+    Args:
+        model: The model to check
+
+    Returns:
+        True if the model has the required tools, False otherwise
+    """
+    if not hasattr(model, "tools") or not model.tools:
+        return False
+
+    required_tools = ["play_card_tool", "give_clue_tool", "discard_tool"]
+    model_tool_names = [tool.get("function", {}).get(
+        "name", "") for tool in model.tools]
+
+    # Check if all required tools are defined
+    return all(tool in model_tool_names for tool in required_tools)
 
 
 def propose_action(
     state: Dict[str, Any],
-    model,
-    agent_id: int,
-    memory: Dict[str, Any],
-    config=None
+    config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Propose an action based on the current game state and thoughts.
+    Propose an action based on the game state analysis and thoughts.
 
     Args:
-        state: Current state of the reasoning graph
-        model: Language model to use for generating the action proposal
-        agent_id: ID of the agent
-        memory: Agent's memory
-        config: Optional configuration
+        state: The current state
+        config: Optional configuration containing model, agent_id, and agent_instance
 
     Returns:
-        Updated state with the proposed action
+        Updated state with proposed action
     """
-    # Get the current thoughts from the state
-    current_thoughts = state.get("current_thoughts", [])
-    if not current_thoughts:
-        logger.warning("No thoughts found in state, cannot propose action")
-        return state
+    # Extract parameters from config
+    if config is None:
+        config = {}
 
-    # Create a new state to avoid modifying the input state
+    # Debug logging
+    logger.info(f"propose_action called with state keys: {list(state.keys())}")
+    logger.info(
+        f"propose_action called with config keys: {list(config.keys())}")
+
+    model = config.get("model")
+    agent_id = config.get("agent_id")
+    agent_instance = config.get("agent_instance")
+
+    # Debug logging
+    logger.info(f"model from config: {model}")
+    logger.info(f"agent_id from config: {agent_id}")
+    logger.info(f"agent_id from state: {state.get('agent_id')}")
+
+    if not model:
+        raise ValueError("Model not provided in config")
+
+    # Fix: Properly handle agent_id
+    if agent_id is None:
+        agent_id = state.get("agent_id")
+
+    if agent_id is None:
+        raise ValueError("Agent ID not provided in config or state")
+
+    logger.info(f"Agent {agent_id} proposing action")
+
+    # Create a copy of the state to avoid modifying the original
     new_state = state.copy()
 
-    # Get the messages from the state or initialize an empty list
-    messages = state.get("messages", [])
+    # Track the execution path
+    execution_path = new_state.get("execution_path", [])
+    execution_path.append("propose_action")
+    new_state["execution_path"] = execution_path
 
-    # Get the game state from the state
-    game_state = state.get("game_state")
-    if not game_state:
-        logger.warning("No game state found in state, cannot propose action")
-        return state
-
-    # Get the discussion history from the state
+    # Get the game state, card knowledge, and thoughts from the state
+    game_state = state.get("game_state", {})
+    card_knowledge = state.get("card_knowledge", {})
+    thoughts = state.get("current_thoughts", [])
     discussion_history = state.get("discussion_history", [])
-
-    # Get the game history from the state
     game_history = state.get("game_history", [])
 
-    # Get the card knowledge from the state
-    card_knowledge = state.get("card_knowledge", {})
-
-    # Get any recent errors from the state
-    recent_errors = state.get("errors", [])
-
-    # Create the action proposal prompt
+    # Create the prompt for action proposal
     prompt = create_action_proposal_prompt(
         game_state=game_state,
         agent_id=agent_id,
         card_knowledge=card_knowledge,
-        current_thoughts=current_thoughts,
+        current_thoughts=thoughts,
         discussion_history=discussion_history,
-        game_history=game_history,
-        recent_errors=recent_errors
+        game_history=game_history
     )
 
-    # Map thoughts to potential actions
-    action_map = _map_thoughts_to_actions(current_thoughts)
+    # Log the prompt for debugging
+    logger.debug(f"Action proposal prompt: {prompt}")
 
-    # Create the message
+    # Create a human message with the prompt
     message = HumanMessage(content=prompt)
 
-    # Get the action proposal from the model
-    # Force the model to make a tool call by using tool_choice="required"
-    # First, check if the model already has tool_choice set
-    if hasattr(model, "tool_choice") and model.tool_choice == "required":
-        # Model already has tool_choice set to "required"
-        response = model.invoke([message])
-    else:
-        # Create a copy of the model with tool_choice="required"
-        action_model = model.bind(tool_choice="required")
-        response = action_model.invoke([message])
+    # Send the message to the model
+    response = model.invoke([message])
 
-    # Add the messages to the state
-    messages.append(message)
-    messages.append(response)
-    new_state["messages"] = messages
+    # Log the response for debugging
+    logger.debug(f"Action proposal response: {response}")
 
-    # Log the tool calls if present
+    # Add the response to the messages
+    if "messages" not in new_state:
+        new_state["messages"] = []
+    new_state["messages"].append(response)
+
+    # Extract the tool call from the response
+    tool_calls = []
     if hasattr(response, "tool_calls") and response.tool_calls:
-        logger.info(f"Model proposed tool calls: {response.tool_calls}")
+        tool_calls = response.tool_calls
+    else:
+        # Try to extract tool calls from the content
+        extracted_tool_call = _extract_tool_call_from_text(response.content)
+        if extracted_tool_call:
+            tool_calls = [extracted_tool_call]
 
-        # Extract the first tool call for detailed logging
-        tool_call = response.tool_calls[0]
-        original_tool_name = tool_call.get("name", "")
+    # Store the tool calls in the state
+    new_state["proposed_tool_calls"] = tool_calls
 
-        # Normalize the tool name to match official names
-        normalized_tool_name = _normalize_tool_name(original_tool_name)
+    # Store the tool calls in the agent's memory if available
+    if agent_instance and hasattr(agent_instance, "store_tool_calls"):
+        agent_instance.store_tool_calls(tool_calls, new_state)
 
-        # Update the tool call with the normalized name if it changed
-        if normalized_tool_name != original_tool_name:
-            logger.info(
-                f"Normalized tool name from '{original_tool_name}' to '{normalized_tool_name}'")
-            tool_call["name"] = normalized_tool_name
-            # Update the tool call in the response
-            response.tool_calls[0]["name"] = normalized_tool_name
-
+    # Convert the tool call to the format expected by the game engine
+    if tool_calls:
+        tool_call = tool_calls[0]
+        tool_name = _normalize_tool_name(tool_call.get("name", ""))
         tool_args = tool_call.get("args", {})
-        logger.info(
-            f"Tool call details - Name: {normalized_tool_name}, Args: {tool_args}")
 
-        # Analyze the relationship between thoughts and tool call
-        logger.info("Analyzing relationship between thoughts and tool call:")
-        for i, thought in enumerate(current_thoughts):
-            # Check if the thought relates to the tool call
-            relation = []
-            if normalized_tool_name == "play_card_tool" and "play" in thought.lower():
-                relation.append("play_card")
-            if normalized_tool_name == "give_clue_tool" and "clue" in thought.lower():
-                relation.append("give_clue")
-            if normalized_tool_name == "discard_tool" and "discard" in thought.lower():
-                relation.append("discard")
+        if tool_name == "play_card_tool":
+            new_state["action"] = {
+                "type": "play_card",
+                "card_index": tool_args.get("card_index", 0)
+            }
+        elif tool_name == "give_clue_tool":
+            new_state["action"] = {
+                "type": "give_clue",
+                "target_id": tool_args.get("target_id", 0),
+                "clue": {
+                    "type": tool_args.get("clue_type", "color"),
+                    "value": tool_args.get("clue_value", "red")
+                }
+            }
+        elif tool_name == "discard_tool":
+            # Check if at max clue tokens
+            if game_state.get("clue_tokens", 0) >= game_state.get("max_clue_tokens", 8):
+                logger.warning(
+                    f"Agent {agent_id} attempted to discard when at max clue tokens")
+                # Find a valid target for a clue
+                target_id = None
+                for player_id in game_state.get("hands", {}):
+                    if player_id != agent_id and game_state["hands"][player_id]:
+                        target_id = player_id
+                        break
 
-            # Check for value references
-            if normalized_tool_name == "give_clue_tool":
-                clue_value = tool_args.get("clue_value", "")
-                if clue_value and clue_value in thought:
-                    relation.append(f"value_{clue_value}")
-
-            if relation:
-                logger.info(
-                    f"  Thought {i+1} relates to tool call via: {', '.join(relation)}")
+                if target_id is not None:
+                    # Find a valid clue to give
+                    target_hand = game_state["hands"][target_id]
+                    if target_hand:
+                        # Try to give a color clue
+                        new_state["action"] = {
+                            "type": "give_clue",
+                            "target_id": target_id,
+                            "clue": {
+                                "type": "color",
+                                "value": target_hand[0]["color"]
+                            }
+                        }
+                else:
+                    # If we couldn't find a valid clue target, try to play a card
+                    new_state["action"] = {
+                        "type": "play_card",
+                        "card_index": 0
+                    }
             else:
-                logger.info(
-                    f"  Thought {i+1} has no clear relation to tool call")
-
-        # Check if the tool call is consistent with the action map
-        is_consistent, reason = _check_tool_call_against_action_map(
-            tool_call, action_map)
-        if is_consistent:
-            logger.info(f"Tool call is consistent with action map: {reason}")
+                new_state["action"] = {
+                    "type": "discard",
+                    "card_index": tool_args.get("card_index", 0)
+                }
         else:
             logger.warning(
-                f"Tool call is NOT consistent with action map: {reason}")
-
-        # Store the proposed tool calls in the state for later use
-        new_state["proposed_tool_calls"] = response.tool_calls
+                f"Unknown tool name: {tool_name}, defaulting to discard")
+            new_state["action"] = {
+                "type": "discard",
+                "card_index": 0
+            }
     else:
-        logger.warning("No tool calls found in model response")
+        # If no tool calls were found, create a default action
+        logger.warning(f"No tool calls found, creating default action")
+        new_state["action"] = {
+            "type": "discard",
+            "card_index": 0
+        }
 
     return new_state
 
@@ -581,29 +544,296 @@ def _extract_thoughts(content: str) -> List[str]:
     Returns:
         List of extracted thoughts
     """
+    if not content or not content.strip():
+        return []
+
     thoughts = []
 
-    # Split the content into lines
-    lines = content.strip().split("\n")
+    # First, try to find simple numbered thoughts (our preferred format)
+    numbered_pattern = r'(?:^|\n)\s*(\d+)[.):]\s*(.*?)(?=\n\s*\d+[.):]\s*|$)'
+    numbered_matches = re.findall(numbered_pattern, content, re.DOTALL)
+    if numbered_matches:
+        thoughts = [match[1].strip()
+                    for match in numbered_matches if match[1].strip()]
+        logger.info(
+            f"Extracted {len(thoughts)} thoughts with simple numbered format")
+        return thoughts
 
-    # Look for lines that start with numbers or bullet points
-    for line in lines:
-        line = line.strip()
-        if line and (line[0].isdigit() or line[0] in ["•", "-", "*"]):
-            # Remove the number or bullet point
-            thought = line
-            if line[0].isdigit():
-                parts = line.split(".", 1)
-                if len(parts) > 1:
-                    thought = parts[1].strip()
+    # Try to find thoughts with the explicit THOUGHT prefix
+    thought_pattern = r'(?:^|\n)(?:THOUGHT\s*\d*:?\s*)(.*?)(?=\n\s*THOUGHT\s*\d*:?\s*|$)'
+    thought_matches = re.findall(
+        thought_pattern, content, re.DOTALL | re.IGNORECASE)
+    if thought_matches:
+        thoughts = [match.strip()
+                    for match in thought_matches if match.strip()]
+        logger.info(f"Extracted {len(thoughts)} thoughts with THOUGHT prefix")
+        return thoughts
+
+    # If no explicit THOUGHT prefixes, try alternative numbered thoughts
+    alt_numbered_pattern = r'(?:^|\n)(?:\d+\.?\s*)(.*?)(?=\n\s*\d+\.?\s*|$)'
+    alt_numbered_matches = re.findall(alt_numbered_pattern, content, re.DOTALL)
+    if alt_numbered_matches:
+        thoughts = [match.strip()
+                    for match in alt_numbered_matches if match.strip()]
+        logger.info(
+            f"Extracted {len(thoughts)} thoughts with alternative numbered format")
+        return thoughts
+
+    # Try to find sections labeled as thoughts
+    labeled_patterns = [
+        r'(?:^|\n)(?:Thought|THOUGHT|Reasoning|REASONING|Analysis|ANALYSIS)[^\n]*?:\s*(.*?)(?=\n\s*(?:Thought|THOUGHT|Reasoning|REASONING|Analysis|ANALYSIS)[^\n]*?:|$)',
+        r'(?:^|\n)(?:[*\-•]\s*)(.*?)(?=\n\s*[*\-•]\s*|$)'
+    ]
+
+    for pattern in labeled_patterns:
+        matches = re.findall(pattern, content, re.DOTALL)
+        if matches:
+            thoughts = [match.strip() for match in matches if match.strip()]
+            logger.info(
+                f"Extracted {len(thoughts)} thoughts with labeled format")
+            return thoughts
+
+    # If all else fails, split by paragraphs
+    paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+    if paragraphs:
+        # Filter out very short paragraphs and headers
+        thoughts = [p for p in paragraphs if len(
+            p) > 15 and not p.startswith('#')]
+        logger.info(f"Extracted {len(thoughts)} thoughts from paragraphs")
+        if thoughts:
+            return thoughts
+
+    # Last resort: use the whole content as one thought
+    logger.warning(
+        "Could not extract structured thoughts, using entire content")
+    return [content.strip()]
+
+
+def _extract_tool_call_from_text(content: str) -> Optional[Dict[str, Any]]:
+    """
+    Extract a tool call from a text response.
+
+    Args:
+        content: The text content to extract from
+
+    Returns:
+        A tool call dictionary if found, None otherwise
+    """
+    # Try to find a JSON object in the text
+    import re
+    import json
+
+    # Look for JSON objects in the text
+    json_pattern = r'\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\}'
+    matches = re.findall(json_pattern, content)
+
+    for match in matches:
+        try:
+            data = json.loads(match)
+            # Check if this looks like a tool call
+            if "name" in data and "args" in data:
+                # Add missing fields if needed
+                if "id" not in data:
+                    data["id"] = f"call_{uuid.uuid4().hex.replace('-', '')}"
+                if "type" not in data:
+                    data["type"] = "tool_call"
+                return data
+        except json.JSONDecodeError:
+            continue
+
+    return None
+
+
+def execute_action(state: AgentStateDict, config: Optional[Dict[str, Any]] = None) -> AgentStateDict:
+    """
+    Execute the proposed action using the appropriate tool implementation.
+
+    Args:
+        state: The current state
+        config: Optional configuration
+
+    Returns:
+        Updated state with action results
+    """
+    logger.info("Executing proposed action")
+
+    # Debug logging
+    logger.info(f"execute_action called with state keys: {list(state.keys())}")
+    logger.info(
+        f"execute_action called with config keys: {list(config.keys()) if config else []}")
+
+    # Create a copy of the state to avoid modifying the original
+    new_state = state.copy()
+
+    try:
+        # Get the agent instance and game state from config
+        agent_instance = config.get("agent_instance") if config else None
+        agent_id = config.get("agent_id") if config else state.get("agent_id")
+
+        # Debug logging
+        logger.info(
+            f"agent_id from config: {config.get('agent_id') if config else None}")
+        logger.info(f"agent_id from state: {state.get('agent_id')}")
+
+        # Fix: Properly handle agent_id
+        if agent_id is None:
+            agent_id = state.get("agent_id")
+
+        if agent_id is None:
+            raise ValueError("Agent ID not provided in config or state")
+
+        game_state = agent_instance.current_game_state if agent_instance else None
+
+        if not game_state:
+            raise ValueError("Game state not available for action execution")
+
+        # Get the proposed tool calls from the state
+        proposed_tool_calls = state.get("proposed_tool_calls")
+
+        if not proposed_tool_calls:
+            logger.warning("No proposed tool calls found in state")
+            new_state["action_result"] = ActionResult(
+                action="none",
+                result="No action was proposed",
+                timestamp=state.get("timestamp", "")
+            )
+            return new_state
+
+        # Get the first tool call
+        tool_call = proposed_tool_calls[0]
+
+        # Normalize the tool name
+        tool_name = _normalize_tool_name(tool_call.get("name", ""))
+        tool_args = tool_call.get("args", {})
+
+        # Execute the appropriate tool based on the name
+        result = None
+        if tool_name == "play_card_tool":
+            card_index = tool_args.get("card_index", 0)
+            result = _play_card_impl(agent_id, card_index, game_state)
+        elif tool_name == "give_clue_tool":
+            target_id = tool_args.get("target_id", 0)
+            clue_type = tool_args.get("clue_type", "")
+            clue_value = tool_args.get("clue_value", "")
+            result = _give_clue_impl(
+                agent_id, target_id, clue_type, clue_value, game_state)
+        elif tool_name == "discard_tool":
+            # Check for max clue tokens before discarding
+            if game_state.clue_tokens >= game_state.max_clue_tokens:
+                logger.warning(
+                    f"Agent {agent_id} attempted to discard when at max clue tokens")
+                result = {"error": "Cannot discard when at max clue tokens"}
             else:
-                thought = line[1:].strip()
+                card_index = tool_args.get("card_index", 0)
+                result = _discard_impl(agent_id, card_index, game_state)
+        else:
+            result = {"error": f"Unknown tool: {tool_name}"}
 
-            if thought:
-                thoughts.append(thought)
+        # Check for errors in the result
+        if result and "error" in result:
+            logger.error(
+                f"Error executing tool {tool_name}: {result['error']}")
+            new_state["error"] = result["error"]
+            new_state["action_error"] = ActionError(
+                action={"name": tool_name, "args": tool_args},
+                error=result["error"],
+                timestamp=state.get("timestamp", ""),
+                turn=state.get("turn_count", 0)
+            )
+        else:
+            # Store the successful result
+            logger.info(f"Successfully executed tool {tool_name}")
+            new_state["action_result"] = ActionResult(
+                action=tool_name,
+                args=tool_args,
+                result=result,
+                timestamp=state.get("timestamp", "")
+            )
 
-    # If no thoughts were found, use the whole content
-    if not thoughts:
-        thoughts = [content.strip()]
+            # Store in agent memory if available
+            if agent_instance and hasattr(agent_instance, "store_memory"):
+                agent_instance.store_memory(
+                    "action_result", new_state["action_result"])
 
-    return thoughts
+        return new_state
+    except Exception as e:
+        logger.error(f"Error in execute_action: {e}")
+        new_state["error"] = str(e)
+        return new_state
+
+
+def handle_error(state: AgentStateDict, config: Optional[Dict[str, Any]] = None) -> AgentStateDict:
+    """
+    Handle errors that occurred during action execution.
+
+    Args:
+        state: The current state
+        config: Optional configuration
+
+    Returns:
+        Updated state with error handling
+    """
+    logger.info("Handling error in action execution")
+
+    # Debug logging
+    logger.info(f"handle_error called with state keys: {list(state.keys())}")
+    logger.info(
+        f"handle_error called with config keys: {list(config.keys()) if config else []}")
+
+    # Create a copy of the state to avoid modifying the original
+    new_state = state.copy()
+
+    # Get the error from the state
+    error = state.get("error", "Unknown error")
+    action_error = state.get("action_error")
+
+    # Log the error
+    logger.error(f"Error in action execution: {error}")
+
+    # Get the agent instance and agent_id from config
+    agent_instance = config.get("agent_instance") if config else None
+    agent_id = config.get("agent_id") if config else state.get("agent_id")
+
+    # Debug logging
+    logger.info(
+        f"agent_id from config: {config.get('agent_id') if config else None}")
+    logger.info(f"agent_id from state: {state.get('agent_id')}")
+
+    # Fix: Properly handle agent_id
+    if agent_id is None:
+        agent_id = state.get("agent_id")
+
+    if agent_id is None:
+        logger.warning(
+            "Agent ID not provided in config or state for error handling")
+        # Continue anyway since this is error handling
+
+    # Store the error in agent memory if available
+    if agent_instance and hasattr(agent_instance, "store_memory"):
+        # Get existing errors or initialize empty list
+        errors = agent_instance.get_memory_from_store("action_errors", [])
+
+        # Add the new error
+        if action_error:
+            errors.append(action_error)
+        else:
+            errors.append(ActionError(
+                action={"name": "unknown", "args": {}},
+                error=error,
+                timestamp=state.get("timestamp", ""),
+                turn=state.get("turn_count", 0)
+            ))
+
+        # Store the updated errors
+        agent_instance.store_memory("action_errors", errors)
+
+    # Clear the error from the state to avoid infinite loops
+    new_state.pop("error", None)
+
+    # Add the error to the state's errors list for reference
+    errors = new_state.get("errors", [])
+    errors.append(error)
+    new_state["errors"] = errors
+
+    # Return the updated state
+    return new_state

@@ -3,6 +3,7 @@ import logging
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 from ...game.state import GameState
+import os
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -37,7 +38,9 @@ class DiscussionManager:
         """
         # Use default model if none specified
         if model_name is None:
-            model_name = "o3-mini"
+            model_name = os.getenv("MODEL_NAME", "o3-mini")
+            logger.info(
+                f"Discussion manager using model from environment: {model_name}")
 
         # Initialize the model without temperature
         return ChatOpenAI(

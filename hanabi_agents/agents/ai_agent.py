@@ -2,17 +2,19 @@ from typing import Dict, Any, List, Optional, Union
 import os
 import logging
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 from .base import Agent
 from ..game.state import GameState
 from .state.state_factory import create_initial_state, create_action_state
 from .reasoning.graph import setup_reasoning_graph
 from .tools import play_card_tool, give_clue_tool, discard_tool
-from .reasoning.nodes import _normalize_tool_name
+from .reasoning.nodes import _normalize_tool_name, execute_action
 import datetime
-from .state.agent_state import AgentMemory, ActionError, ActionResult
+from .state.agent_state import AgentMemory, ActionError, ActionResult, AgentStateDict
 
-# Set up logging
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -24,38 +26,49 @@ class AIAgent(Agent):
     generate strategic thoughts, and propose actions.
     """
 
-    def __init__(self, agent_id: int, name: str = None, model_name: str = None):
+    def __init__(self, agent_id: int, name: str = None, model_name: str = None, temperature: float = 0.0):
         """
-        Initialize a new AI agent.
+        Initialize the AI agent.
 
         Args:
-            agent_id: Unique identifier for this agent
-            name: Optional name for this agent
-            model_name: Name of the language model to use
+            agent_id: The ID of the agent
+            name: The name of the agent
+            model_name: The name of the model to use
+            temperature: The temperature to use for the model
         """
         super().__init__(agent_id, name)
 
+        # Set up logging to suppress detailed debugging
+        logging.getLogger("openai").setLevel(logging.WARNING)
+        logging.getLogger("langchain").setLevel(logging.WARNING)
+        logging.getLogger("langchain_core").setLevel(logging.WARNING)
+        logging.getLogger("langgraph").setLevel(logging.WARNING)
+
         # Initialize the model
-        self.model = self._initialize_model(model_name)
+        self.model = self._initialize_model(model_name, temperature)
 
-        # Initialize memory storage as a simple dictionary
-        self.memory_store = {}
-
-        # Initialize the agent memory
+        # Initialize agent memory
         self.agent_memory = AgentMemory()
 
-        # Initialize the reasoning graph
-        self.reasoning_graph = setup_reasoning_graph(self)
+        # Initialize memory store as a simple dictionary
+        self.memory_store = {}
 
-        # Store current game state for tool access
+        # Initialize checkpointer as None
+        self.checkpointer = None
+
+        # Initialize current game state
         self.current_game_state = None
 
-    def _initialize_model(self, model_name: str = None) -> ChatOpenAI:
+        # Initialize reasoning graph
+        self.reasoning_graph = setup_reasoning_graph(self)
+
+    def _initialize_model(self, model_name: str = None, temperature: float = 0.0) -> ChatOpenAI:
         """
         Initialize the language model.
 
         Args:
             model_name: Name of the model to use
+            temperature: The temperature to use for the model
 
         Returns:
             Initialized language model
@@ -69,21 +82,158 @@ class AIAgent(Agent):
 
         # Use default model if none specified
         if model_name is None:
-            model_name = os.getenv("OPENAI_MODEL_NAME", "o3-mini")
+            model_name = os.getenv("MODEL_NAME", "o3-mini")
+            logger.info(f"Using model from environment: {model_name}")
 
-        # Initialize the model and bind tools
+        # Define the tools
+        play_card_tool = {
+            "type": "function",
+            "function": {
+                "name": "play_card_tool",
+                "description": "Play a card from your hand",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "card_index": {
+                            "type": "integer",
+                            "description": "Index of the card to play (0-indexed)"
+                        }
+                    },
+                    "required": ["card_index"],
+                    "additionalProperties": False
+                }
+            }
+        }
+
+        give_clue_tool = {
+            "type": "function",
+            "function": {
+                "name": "give_clue_tool",
+                "description": "Give a clue to another player",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target_id": {
+                            "type": "integer",
+                            "description": "ID of the player to give the clue to"
+                        },
+                        "clue_type": {
+                            "type": "string",
+                            "enum": ["color", "number"],
+                            "description": "Type of clue to give"
+                        },
+                        "clue_value": {
+                            "type": "string",
+                            "description": "Value of the clue (e.g., 'red', '1')"
+                        }
+                    },
+                    "required": ["target_id", "clue_type", "clue_value"],
+                    "additionalProperties": False
+                }
+            }
+        }
+
+        discard_tool = {
+            "type": "function",
+            "function": {
+                "name": "discard_tool",
+                "description": "Discard a card from your hand",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "card_index": {
+                            "type": "integer",
+                            "description": "Index of the card to discard (0-indexed)"
+                        }
+                    },
+                    "required": ["card_index"],
+                    "additionalProperties": False
+                }
+            }
+        }
+
+        # Initialize the model with the tools
         model = ChatOpenAI(
             model=model_name,
             api_key=api_key,
-            verbose=False  # Disable verbose mode to prevent stdout logging
+            verbose=True,  # Enable verbose mode for better debugging
+            temperature=temperature,
+            tools=[play_card_tool, give_clue_tool, discard_tool]
         )
 
-        # Bind tools to the model with tool_choice="required" to force tool calls
-        return model.bind_tools([
-            play_card_tool,
-            give_clue_tool,
-            discard_tool
-        ], tool_choice="required")
+        # Define tool schemas - simplified approach without strict property
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "play_card_tool",
+                    "description": "Play a card from the agent's hand",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "card_index": {
+                                "type": "integer",
+                                "description": "Index of the card to play (0-indexed, must be between 0 and 4)"
+                            }
+                        },
+                        "required": ["card_index"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "give_clue_tool",
+                    "description": "Give a clue to another player about their cards",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "target_id": {
+                                "type": "integer",
+                                "description": "ID of the player to give the clue to"
+                            },
+                            "clue_type": {
+                                "type": "string",
+                                "enum": ["color", "number"],
+                                "description": "Type of clue to give"
+                            },
+                            "clue_value": {
+                                "type": "string",
+                                "description": "Value of the clue (e.g., 'red', '1')"
+                            }
+                        },
+                        "required": ["target_id", "clue_type", "clue_value"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "discard_tool",
+                    "description": "Discard a card from the agent's hand",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "card_index": {
+                                "type": "integer",
+                                "description": "Index of the card to discard (0-indexed, must be between 0 and 4)"
+                            }
+                        },
+                        "required": ["card_index"],
+                        "additionalProperties": False
+                    }
+                }
+            }
+        ]
+
+        # Create two model versions - one for thought generation (without forced tools) and one for action selection (with forced tools)
+        # No forced tool choice for thought generation
+        self.thought_model = model.bind(tools=tools)
+
+        # Always use tool_choice='required' to force the model to call a tool for action selection
+        return model.bind(tools=tools, tool_choice="required")
 
     def participate_in_discussion(self, game_state: GameState, discussion_history: List[Dict[str, Any]]) -> str:
         """
@@ -108,10 +258,28 @@ class AIAgent(Agent):
             discussion_history=discussion_history
         )
 
-        # Run the reasoning graph
+        # Explicitly set agent_id in the state to ensure it's available
+        state["agent_id"] = self.agent_id
+
+        # Create a unique conversation ID for this agent and turn
+        conversation_id = f"agent_{self.agent_id}_turn_{game_state.turn_count}"
+
+        # Create a unique thread ID for this conversation
+        thread_id = f"thread_{self.agent_id}_{game_state.turn_count}_{datetime.datetime.now().timestamp()}"
+
+        # Run the reasoning graph with explicit model configuration and conversation ID
         result = self.reasoning_graph.invoke(
             state,
-            config={"agent_id": self.agent_id, "agent_instance": self}
+            config={
+                "agent_id": self.agent_id,
+                "agent_instance": self,
+                "model": self.model,  # For action proposal
+                "thought_model": self.thought_model,  # For thought generation
+                "configurable": {
+                    "conversation_id": conversation_id,
+                    "thread_id": thread_id  # Add thread_id for checkpoint system
+                }
+            }
         )
 
         # Extract the thoughts and tool calls from the result
@@ -183,202 +351,72 @@ class AIAgent(Agent):
 
     def decide_action(self, game_state: GameState, discussion_summary: Optional[str] = None) -> Dict[str, Any]:
         """
-        Execute the tool call (action) suggested during the analysis phase.
+        Decide on an action to take based on the game state and discussion summary.
 
         Args:
             game_state: Current state of the game (filtered for this agent)
-            discussion_summary: Not used in this implementation
+            discussion_summary: Summary of the discussion (optional)
 
         Returns:
-            A dictionary representing the chosen action
+            A dictionary containing the action to take
         """
-        logger.info(f"Agent {self.agent_id} executing suggested action")
+        logger.info(f"Agent {self.agent_id} deciding on action")
 
         # Store the current game state for tool access
         self.current_game_state = game_state
 
-        # Get the tool calls from memory (set during participate_in_discussion)
-        tool_calls = self.get_memory_from_store("tool_calls")
+        # Create the action state
+        state = create_action_state(
+            game_state=game_state,
+            agent_id=self.agent_id,
+            discussion_summary=discussion_summary
+        )
 
-        # Also try to get from agent memory if not found in memory store
-        if not tool_calls:
-            tool_calls = self.agent_memory.get_memory("proposed_tool_calls")
-            if tool_calls:
-                logger.info(
-                    f"Retrieved tool calls from agent memory: {tool_calls}")
-                # Store back in memory store for consistency
-                self.store_memory("tool_calls", tool_calls)
+        # Explicitly set agent_id in the state to ensure it's available
+        state["agent_id"] = self.agent_id
 
-        # If no tool calls were stored during discussion, run the reasoning graph again
-        if not tool_calls:
+        # Create a unique conversation ID for this agent and turn
+        conversation_id = f"agent_{self.agent_id}_action_turn_{game_state.turn_count}"
+
+        # Create a unique thread ID for this conversation
+        thread_id = f"thread_action_{self.agent_id}_{game_state.turn_count}_{datetime.datetime.now().timestamp()}"
+
+        # Run the reasoning graph with explicit model configuration
+        result = self.reasoning_graph.invoke(
+            state,
+            config={
+                "agent_id": self.agent_id,
+                "agent_instance": self,
+                "model": self.model,
+                "thought_model": self.thought_model,
+                "configurable": {
+                    "conversation_id": conversation_id,
+                    "thread_id": thread_id  # Add thread_id for checkpoint system
+                }
+            }
+        )
+
+        # Extract the action from the result
+        action = result.get("action", {})
+        if not action:
             logger.warning(
-                f"No tool calls found in memory, running reasoning graph again")
+                f"No action found in result, using fallback action")
+            return self._fallback_action(game_state)
 
-            # Create the action state with agent memory to include proposed tool calls
-            state = create_action_state(
-                game_state=game_state,
-                agent_id=self.agent_id,
-                discussion_summary="",
-                agent_memory=self.agent_memory
-            )
+        # Extract the thoughts from the result
+        thoughts = result.get("current_thoughts", [])
 
-            # Create a model with explicit tool_choice="required" for this run
-            forced_model = self.model.bind(tool_choice="required")
+        # Store the thoughts in the agent's memory
+        self.agent_memory.thoughts = thoughts
+        # Also store in the memory store for immediate access
+        self.store_memory("current_thoughts", thoughts)
 
-            # Run the reasoning graph with the forced model
-            result = self.reasoning_graph.invoke(
-                state,
-                config={
-                    "agent_id": self.agent_id,
-                    "agent_instance": self,
-                    "model": forced_model  # Pass the forced model to the graph
-                }
-            )
+        # Store the action in the agent's memory
+        self.agent_memory.proposed_action = action
+        # Also store in the memory store for immediate access
+        self.store_memory("proposed_action", action)
 
-            # Extract thoughts and store them in the agent's memory
-            thoughts = result.get("current_thoughts", [])
-            if thoughts:
-                self.agent_memory.thoughts = thoughts
-                self.store_memory("current_thoughts", thoughts)
-
-            # Extract tool calls from the result
-            messages = result.get("messages", [])
-            self.store_memory("messages", messages)
-
-            for message in reversed(messages):
-                if hasattr(message, "tool_calls") and message.tool_calls:
-                    tool_calls = message.tool_calls
-                    # Store the tool calls in memory
-                    logger.info(
-                        f"Storing tool calls from second reasoning run: {tool_calls}")
-                    self.store_memory("tool_calls", tool_calls)
-                    # Also store in the agent's memory for persistence
-                    self.agent_memory.store_memory(
-                        "proposed_tool_calls", tool_calls)
-                    break
-
-        # If still no tool calls, create a smart fallback action
-        if not tool_calls:
-            logger.warning(
-                f"Agent {self.agent_id} did not generate any tool calls, creating smart fallback action")
-
-            # Check if we're at max clue tokens
-            if game_state.clue_tokens >= game_state.max_clue_tokens:
-                # If at max clue tokens, we can't discard - give a clue instead
-                logger.info(
-                    f"At max clue tokens ({game_state.clue_tokens}), defaulting to give clue")
-
-                # Find a valid target for a clue
-                target_id = None
-                for player_id in game_state.hands:
-                    if player_id != self.agent_id and game_state.hands[player_id]:
-                        target_id = player_id
-                        break
-
-                if target_id is not None:
-                    # Find a valid clue to give
-                    target_hand = game_state.hands[target_id]
-                    if target_hand:
-                        # Try to give a color clue
-                        return {
-                            "type": "give_clue",
-                            "target_id": target_id,
-                            "clue": {
-                                "type": "color",
-                                "value": target_hand[0].color.value
-                            }
-                        }
-
-                # If we couldn't find a valid clue target, try to play a card
-                return {
-                    "type": "play_card",
-                    "card_index": 0
-                }
-            else:
-                # If not at max clue tokens, we can discard
-                return {
-                    "type": "discard",
-                    "card_index": 0
-                }
-
-        # Get the first tool call
-        tool_call = tool_calls[0]
-        original_tool_name = tool_call.get("name", "")
-
-        # Normalize the tool name to match official names
-        tool_name = _normalize_tool_name(original_tool_name)
-
-        # Log if the tool name was normalized
-        if tool_name != original_tool_name:
-            logger.info(
-                f"Normalized tool name from '{original_tool_name}' to '{tool_name}'")
-
-        tool_args = tool_call.get("args", {})
-
-        # Check if the tool call is a discard when at max clue tokens
-        if tool_name == "discard_tool" and game_state.clue_tokens >= game_state.max_clue_tokens:
-            logger.warning(
-                f"Agent {self.agent_id} attempted to discard when at max clue tokens, switching to give clue")
-
-            # Find a valid target for a clue
-            target_id = None
-            for player_id in game_state.hands:
-                if player_id != self.agent_id and game_state.hands[player_id]:
-                    target_id = player_id
-                    break
-
-            if target_id is not None:
-                # Find a valid clue to give
-                target_hand = game_state.hands[target_id]
-                if target_hand:
-                    # Try to give a color clue
-                    return {
-                        "type": "give_clue",
-                        "target_id": target_id,
-                        "clue": {
-                            "type": "color",
-                            "value": target_hand[0].color.value
-                        }
-                    }
-
-            # If we couldn't find a valid clue target, try to play a card
-            return {
-                "type": "play_card",
-                "card_index": 0
-            }
-
-        # Convert the tool call to the format expected by the game engine
-        if tool_name == "play_card_tool":
-            return {
-                "type": "play_card",
-                "card_index": tool_args.get("card_index", 0)
-            }
-        elif tool_name == "give_clue_tool":
-            # Ensure we have all the required fields with proper names
-            action = {
-                "type": "give_clue",
-                "target_id": tool_args.get("target_id", 0),
-                "clue": {
-                    "type": tool_args.get("clue_type", "color"),
-                    "value": tool_args.get("clue_value", "red")
-                }
-            }
-
-            # Log the translation for debugging
-            logger.info(f"Translated give_clue_tool to action: {action}")
-
-            return action
-        elif tool_name == "discard_tool":
-            return {
-                "type": "discard",
-                "card_index": tool_args.get("card_index", 0)
-            }
-        else:
-            logger.error(f"Unknown tool name: {tool_name}")
-            return {
-                "type": "discard",
-                "card_index": 0
-            }
+        return action
 
     def notify_action_result(self, action: Dict[str, Any], result: Union[Dict[str, Any], bool]) -> None:
         """
@@ -469,67 +507,238 @@ class AIAgent(Agent):
             )
 
         # Save the current state to memory store
-        self.memory_store[f"agent_{self.agent_id}"] = self.agent_memory.dict()
+        try:
+            # Use store_memory instead of direct assignment
+            self.store_memory(f"agent_{self.agent_id}",
+                              self.agent_memory.dict())
+        except Exception as e:
+            logger.error(f"Error storing in memory store: {e}")
+            # Continue execution even if memory storage fails
 
     def get_memory_from_store(self, key, default=None):
         """
-        Get a value from the memory store.
+        Get memory from the memory store using LangGraph's recommended approach.
 
         Args:
-            key: Key to retrieve
-            default: Default value to return if key not found
+            key: The key to retrieve
+            default: Default value if key not found
 
         Returns:
-            Value from memory store or default
+            The stored value or default
         """
-        # First check direct keys in memory_store
-        if key in self.memory_store:
-            return self.memory_store[key]
+        # First try to get from agent memory
+        if hasattr(self, 'agent_memory'):
+            value = self.agent_memory.get_memory(key, None)
+            if value is not None:
+                return value
 
-        # Then check in agent memory's custom_memory
-        agent_memory_dict = self.memory_store.get(f"agent_{self.agent_id}")
-        if agent_memory_dict and isinstance(agent_memory_dict, dict):
-            custom_memory = agent_memory_dict.get("custom_memory", {})
-            if key in custom_memory:
-                return custom_memory[key]
+        # Create a unique key for this agent
+        memory_key = f"agent_{self.agent_id}_{key}"
 
-        # If not found in either place, return the default
-        return default
+        # Use LangGraph's get method to retrieve from memory store
+        try:
+            # In LangGraph 0.3.5+, InMemoryStore may not have a get method
+            # Just log and return default
+            logger.debug(f"Would retrieve memory with key: {memory_key}")
+            # value = self.memory_store.get(memory_key)  # This may not work in LangGraph 0.3.5+
+            # return value if value is not None else default
+            return default
+        except Exception as e:
+            logger.error(f"Error retrieving from memory store: {e}")
+            return default
 
     def store_memory(self, key, value):
         """
-        Store a value in the memory store.
+        Store a value in the memory store using LangGraph's recommended approach.
 
         Args:
-            key: Key to store under
+            key: Key to store the value under
             value: Value to store
         """
-        self.memory_store[key] = value
+        # Create a unique key for this agent
+        memory_key = f"agent_{self.agent_id}_{key}"
 
-        # Save the current state to memory store after each memory update
-        self.memory_store[f"agent_{self.agent_id}"] = self.agent_memory.dict()
+        # Use LangGraph's set method to store in memory store
+        try:
+            # For LangGraph 0.3.5+, InMemoryStore doesn't have a set method
+            # Just log the error and continue with agent memory
+            logger.debug(f"Storing memory with key: {memory_key}")
+            # self.memory_store.set(memory_key, value)  # This doesn't work in LangGraph 0.3.5+
+        except Exception as e:
+            logger.error(f"Error storing in memory store: {e}")
+
+        # Store in agent memory's custom_memory for persistence
+        if hasattr(self, 'agent_memory'):
+            self.agent_memory.store_memory(key, value)
+
+        # Create a checkpoint with the memory saver
+        try:
+            # Create a config dict for the checkpoint
+            config_dict = {
+                "agent_id": self.agent_id,
+                "key": key,
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+
+            # In LangGraph 0.3.5+, MemorySaver doesn't have a save method
+            # Just log and continue
+            logger.debug(f"Would create checkpoint with config: {config_dict}")
+            # self.checkpointer.save(config_dict)  # This doesn't work in LangGraph 0.3.5+
+        except Exception as e:
+            logger.error(f"Error creating checkpoint: {e}")
 
     def load_memory_from_checkpoint(self, config_filter=None):
         """
-        Load memory from a checkpoint.
+        Load memory from a checkpoint using LangGraph's recommended approach.
 
         Args:
-            config_filter: Optional filter for checkpoint config (not used in this implementation)
+            config_filter: Optional filter for checkpoint config
 
         Returns:
             True if memory was loaded, False otherwise
         """
         try:
-            # Get the memory for this agent
-            memory_data = self.memory_store.get(f"agent_{self.agent_id}")
+            if config_filter is None:
+                config_filter = {"agent_id": self.agent_id}
 
-            if memory_data:
-                # Restore agent memory from stored data
-                self.agent_memory = AgentMemory.from_dict(memory_data)
+            # Get the latest checkpoint for this agent
+            checkpoint = self.checkpointer.get_latest(config_filter)
+
+            if checkpoint:
+                # Extract the state and config
+                state_dict, config = checkpoint
+
+                # Load the state into agent memory
+                self.agent_memory = AgentMemory.from_dict(state_dict)
+
+                logger.info(
+                    f"Agent {self.agent_id} loaded memory from checkpoint (timestamp: {config.get('timestamp')})")
                 return True
-            return False
 
+            # If no checkpoint found, try to get from memory store
+            memory_key = f"agent_{self.agent_id}"
+            try:
+                memory_data = self.memory_store.get(memory_key)
+                if memory_data:
+                    self.agent_memory = AgentMemory.from_dict(memory_data)
+                    logger.info(
+                        f"Agent {self.agent_id} loaded memory from memory store")
+                    return True
+            except Exception as e:
+                logger.error(f"Error loading from memory store: {e}")
+
+            logger.warning(
+                f"No checkpoint or memory store data found for agent {self.agent_id}")
+            return False
         except Exception as e:
             logger.error(
-                f"Error loading memory for agent {self.agent_id}: {str(e)}")
+                f"Error loading memory for agent {self.agent_id}: {e}")
             return False
+
+    def store_tool_calls(self, tool_calls, state):
+        """
+        Store tool calls in the agent's memory for use between phases.
+
+        Args:
+            tool_calls: The tool calls to store
+            state: The current state
+
+        Returns:
+            The updated state with stored tool calls
+        """
+        if not tool_calls:
+            return state
+
+        # Make a copy of the state to avoid modifying the original
+        new_state = state.copy()
+
+        # Store the tool calls
+        new_state["proposed_tool_calls"] = tool_calls
+
+        # Log the stored tool calls
+        logger.info(f"Stored tool calls in state: {tool_calls}")
+
+        return new_state
+
+    def take_turn(self, game_state):
+        """
+        Take a turn in the game.
+
+        Args:
+            game_state: The current state of the game
+
+        Returns:
+            The action to take
+        """
+        logger.info(f"Agent {self.player_id} taking turn")
+
+        # Store the current game state for use in the reasoning graph
+        self.current_game_state = game_state
+
+        # Initialize the reasoning graph
+        graph = setup_reasoning_graph(self)
+
+        # Initialize the state
+        state = {
+            "game_state": game_state,
+            "player_id": self.player_id,
+            "memory": self.memory,
+            "model": self.model
+        }
+
+        # Execute the reasoning graph
+        try:
+            logger.info("Executing reasoning graph")
+            final_state = graph.invoke(state)
+
+            # Check if we have an action in the final state
+            if "action" in final_state:
+                action = final_state["action"]
+                logger.info(f"Action from reasoning graph: {action}")
+                return action
+
+            # If no action in final state, check for proposed tool calls
+            elif "proposed_tool_calls" in final_state and final_state["proposed_tool_calls"]:
+                # Use execute_action to convert tool calls to action
+                action_state = execute_action(final_state)
+                if "action" in action_state:
+                    logger.info(
+                        f"Action from execute_action: {action_state['action']}")
+                    return action_state["action"]
+
+            # If we still don't have an action, use a fallback
+            logger.warning(
+                "No action or tool calls found in final state, using fallback")
+            return self._fallback_action(game_state)
+
+        except Exception as e:
+            logger.error(f"Error executing reasoning graph: {e}")
+            return self._fallback_action(game_state)
+
+    def _fallback_action(self, game_state):
+        """
+        Provide a fallback action when the reasoning graph fails.
+
+        Args:
+            game_state: The current state of the game
+
+        Returns:
+            A fallback action
+        """
+        # Check if we can give a clue
+        if game_state.clue_tokens > 0:
+            # Get the next player (wrap around if needed)
+            next_player = (self.agent_id + 1) % len(game_state.hands)
+            return {
+                "type": "clue",
+                "action_type": "clue",
+                "target_id": next_player,
+                "clue_type": "number",
+                "clue_value": "1"
+            }
+        # Otherwise, discard the first card
+        return {
+            "type": "discard",
+            "action_type": "discard",
+            "card_index": 0
+        }
