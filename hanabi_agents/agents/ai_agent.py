@@ -59,6 +59,9 @@ class AIAgent(Agent):
         # Initialize current game state
         self.current_game_state = None
 
+        # Track when thoughts have been displayed (for logging purposes)
+        self._thoughts_displayed_for_turn = -1
+
         # Initialize reasoning graph
         self.reasoning_graph = setup_reasoning_graph(self)
 
@@ -730,8 +733,7 @@ class AIAgent(Agent):
             # Get the next player (wrap around if needed)
             next_player = (self.agent_id + 1) % len(game_state.hands)
             return {
-                "type": "clue",
-                "action_type": "clue",
+                "type": "give_clue",
                 "target_id": next_player,
                 "clue_type": "number",
                 "clue_value": "1"
@@ -739,6 +741,5 @@ class AIAgent(Agent):
         # Otherwise, discard the first card
         return {
             "type": "discard",
-            "action_type": "discard",
             "card_index": 0
         }
