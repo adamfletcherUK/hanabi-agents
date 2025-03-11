@@ -4,11 +4,11 @@ from typing import Dict, Any
 import logging
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from src.game.state import GameState, Card, Color, ClueAction
-from src.agents.ai_agent import AIAgent
-from src.agents.tools.play_card import _play_card_impl
-from src.agents.tools.give_clue import _give_clue_impl
-from src.agents.tools.discard import _discard_impl
+from hanabi_agents.game.state import GameState, Card, Color, ClueAction
+from hanabi_agents.agents.ai_agent import AIAgent
+from hanabi_agents.agents.tools.play_card import _play_card_impl
+from hanabi_agents.agents.tools.give_clue import _give_clue_impl
+from hanabi_agents.agents.tools.discard import _discard_impl
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
