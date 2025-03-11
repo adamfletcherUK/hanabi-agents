@@ -1,18 +1,19 @@
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, TypeVar, cast
+from langchain_core.runnables import RunnableConfig, RunnableLambda
+from .nodes import analyze_game_state, generate_thoughts, propose_action, execute_action, handle_error
 import logging
-from langgraph.graph import StateGraph, END, START
 from ..state.agent_state import AgentStateDict
-from .nodes import (
-    analyze_game_state,
-    generate_thoughts,
-    propose_action,
-    execute_action,
-    handle_error,
-)
+from langgraph.graph import StateGraph, END, START
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Set up logging
 logger = logging.getLogger(__name__)
+
+# Add a new DEBUG level check to reduce console noise
+
+
+def debug_only(message):
+    """Log only if debug level is enabled"""
+    logger.debug(message)
 
 
 def setup_reasoning_graph(agent):
@@ -40,13 +41,13 @@ def setup_reasoning_graph(agent):
         if "agent_instance" not in config:
             config["agent_instance"] = agent
 
-        # Debug logging
-        logger.info(
+        # Move debug logging to debug_only
+        debug_only(
             f"analyze_with_model called with state keys: {list(state.keys())}")
-        logger.info(
+        debug_only(
             f"analyze_with_model called with config keys: {list(config.keys())}")
-        logger.info(f"agent_id in config: {config.get('agent_id')}")
-        logger.info(f"agent_id in state: {state.get('agent_id')}")
+        debug_only(f"agent_id in config: {config.get('agent_id')}")
+        debug_only(f"agent_id in state: {state.get('agent_id')}")
 
         return analyze_game_state(state, config)
 
@@ -62,6 +63,13 @@ def setup_reasoning_graph(agent):
             config["agent_id"] = agent.agent_id
         if "agent_instance" not in config:
             config["agent_instance"] = agent
+
+        # Move debug logging to debug_only
+        debug_only(
+            f"generate_thoughts_with_model called with state keys: {list(state.keys())}")
+        debug_only(
+            f"generate_thoughts_with_model called with config keys: {list(config.keys())}")
+
         return generate_thoughts(state, config)
 
     def propose_action_with_model(state, config=None):
@@ -74,6 +82,13 @@ def setup_reasoning_graph(agent):
             config["agent_id"] = agent.agent_id
         if "agent_instance" not in config:
             config["agent_instance"] = agent
+
+        # Move debug logging to debug_only
+        debug_only(
+            f"propose_action_with_model called with state keys: {list(state.keys())}")
+        debug_only(
+            f"propose_action_with_model called with config keys: {list(config.keys())}")
+
         return propose_action(state, config)
 
     def execute_action_with_agent(state, config=None):
@@ -84,6 +99,13 @@ def setup_reasoning_graph(agent):
             config["agent_instance"] = agent
         if "agent_id" not in config:
             config["agent_id"] = agent.agent_id
+
+        # Move debug logging to debug_only
+        debug_only(
+            f"execute_action_with_agent called with state keys: {list(state.keys())}")
+        debug_only(
+            f"execute_action_with_agent called with config keys: {list(config.keys())}")
+
         return execute_action(state, config)
 
     def handle_error_with_agent(state, config=None):
@@ -94,6 +116,13 @@ def setup_reasoning_graph(agent):
             config["agent_instance"] = agent
         if "agent_id" not in config:
             config["agent_id"] = agent.agent_id
+
+        # Move debug logging to debug_only
+        debug_only(
+            f"handle_error_with_agent called with state keys: {list(state.keys())}")
+        debug_only(
+            f"handle_error_with_agent called with config keys: {list(config.keys())}")
+
         return handle_error(state, config)
 
     # Add nodes to the graph with the wrapped functions

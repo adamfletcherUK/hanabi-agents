@@ -123,16 +123,16 @@ def log_agent_reasoning(agent, turn_count, print_to_console=True):
             for i, thought in enumerate(thoughts):
                 logger.info(f"Thought {i+1}: {thought}")
 
-            # Print to console if requested - but only if we haven't already shown thoughts
-            # We'll skip this if we've already shown thoughts during the analysis phase
-            if print_to_console and not hasattr(agent, '_thoughts_displayed_for_turn') or agent._thoughts_displayed_for_turn != turn_count:
+            # Print to console if explicitly requested AND not already shown
+            # This is typically only used for specific debugging scenarios
+            if print_to_console and (not hasattr(agent, '_reasoning_logged_for_turn') or agent._reasoning_logged_for_turn != turn_count):
                 # Use a different format for console to avoid duplication
                 console_logger.info(
                     f"\n🧠 REASONING CHAIN FOR AGENT {agent.agent_id} (Turn {turn_count}):")
                 for i, thought in enumerate(thoughts):
                     console_logger.info(f"  Thought {i+1}: {thought}")
-                # Mark that we've displayed thoughts for this turn
-                agent._thoughts_displayed_for_turn = turn_count
+                # Mark that we've displayed reasoning for this turn
+                agent._reasoning_logged_for_turn = turn_count
         else:
             logger.warning(
                 f"No thoughts found for agent {agent.agent_id} in turn {turn_count}")
@@ -165,6 +165,8 @@ def log_action_history(agents, turn_count, print_to_console=True):
 
     # Collect all actions from all agents
     all_actions = []
+    # Track action IDs to prevent duplicates
+    seen_actions = set()
 
     for agent in agents:
         if hasattr(agent, 'agent_memory'):
@@ -172,20 +174,27 @@ def log_action_history(agents, turn_count, print_to_console=True):
             action_results = agent.agent_memory.action_results
 
             for action_result in action_results:
-                all_actions.append({
-                    "agent_id": agent.agent_id,
-                    "agent_name": agent.name,
-                    "action": action_result.action,
-                    "result": action_result.result,
-                    # Use the current turn count instead of trying to access action_result.turn
-                    "turn": turn_count
-                })
+                # Create a unique identifier for this action
+                action_str = str(action_result.action)
+                if action_str not in seen_actions:
+                    seen_actions.add(action_str)
+                    all_actions.append({
+                        "agent_id": agent.agent_id,
+                        "agent_name": agent.name,
+                        "action": action_result.action,
+                        "result": action_result.result,
+                        # Use the current turn count instead of trying to access action_result.turn
+                        "turn": turn_count
+                    })
 
     # Sort actions by turn
     all_actions.sort(key=lambda x: x.get("turn", 0))
 
     # Log each action
     if all_actions:
+        # Use a set to track printed actions to avoid duplicates
+        printed_actions = set()
+
         for i, action_data in enumerate(all_actions):
             agent_id = action_data.get("agent_id", "?")
             agent_name = action_data.get("agent_name", "?")
@@ -220,7 +229,10 @@ def log_action_history(agents, turn_count, print_to_console=True):
 
             if print_to_console:
                 # Use a different format for console to avoid duplication
-                console_logger.info(log_message)
+                # Only print if this exact message hasn't been printed before
+                if log_message not in printed_actions:
+                    console_logger.info(log_message)
+                    printed_actions.add(log_message)
     else:
         logger.info("No actions recorded yet")
         if print_to_console:
@@ -364,20 +376,18 @@ def main():
                                 if thought:
                                     thoughts.append(thought)
 
-                        # Log the extracted thoughts to file only
+                        # Log the extracted thoughts to file only (debug level)
                         if thoughts:
                             logger.debug(
                                 f"Extracted thoughts for agent {active_agent.agent_id} (Turn {turn_count + 1}):")
                             for j, thought in enumerate(thoughts):
                                 logger.debug(f"  Thought {j+1}: {thought}")
 
-                            # ADDED: Display thoughts to console in a clean format
-                            console_logger.info("\n💭 AGENT THOUGHTS:")
-                            for j, thought in enumerate(thoughts):
-                                console_logger.info(f"  • {thought}")
-
-                            # Mark that we've displayed thoughts for this turn
-                            active_agent._thoughts_displayed_for_turn = turn_count + 1
+                            # Only display thoughts to console if they haven't been shown already
+                            if not hasattr(active_agent, '_thoughts_displayed_for_turn') or active_agent._thoughts_displayed_for_turn != turn_count + 1:
+                                # Instead of displaying immediate thoughts here, store them for a single, consistent display later
+                                active_agent.store_memory(
+                                    "extracted_thoughts", thoughts)
                         else:
                             logger.debug(
                                 f"No thoughts could be extracted from the LLM output for agent {active_agent.agent_id}")
@@ -427,6 +437,25 @@ def main():
         logger.info("Starting action phase")
         console_logger.info("\n--- 🎬 Action Phase ---")
 
+        # Display the agent's thoughts once and only once, right before the action
+        if not hasattr(current_agent, '_thoughts_displayed_for_turn') or current_agent._thoughts_displayed_for_turn != turn_count + 1:
+            # Try to get thoughts from memory
+            thoughts = current_agent.get_memory_from_store(
+                "current_thoughts", [])
+            extracted_thoughts = current_agent.get_memory_from_store(
+                "extracted_thoughts", [])
+
+            # Use extracted_thoughts if available, otherwise use current_thoughts
+            display_thoughts = extracted_thoughts if extracted_thoughts else thoughts
+
+            if display_thoughts:
+                console_logger.info(
+                    f"\n💭 AGENT {current_agent.agent_id}'s THOUGHTS:")
+                for i, thought in enumerate(display_thoughts):
+                    console_logger.info(f"  • {thought}")
+                # Mark that we've displayed thoughts for this turn
+                current_agent._thoughts_displayed_for_turn = turn_count + 1
+
         # No discussion summary needed - pass empty string
         action = current_agent.decide_action(game_state, "")
         logger.info(f"Action decided: {action}")
@@ -435,21 +464,20 @@ def main():
         log_agent_reasoning(current_agent, turn_count +
                             1, print_to_console=False)
 
-        # Log the agent's thoughts to file only if they haven't been logged already
-        # This is to avoid redundancy in the log file
-        if not hasattr(current_agent, '_thoughts_logged_for_turn') or current_agent._thoughts_logged_for_turn != turn_count + 1:
-            current_thoughts = current_agent.get_memory_from_store(
-                "current_thoughts", [])
-            if current_thoughts:
-                logger.info(
-                    f"Agent {current_agent.agent_id}'s thoughts for turn {turn_count + 1}:")
-                for i, thought in enumerate(current_thoughts):
-                    logger.info(f"  Thought {i+1}: {thought}")
-                # Mark that we've logged thoughts for this turn
-                current_agent._thoughts_logged_for_turn = turn_count + 1
-            else:
-                logger.warning(
-                    f"No thoughts found for agent {current_agent.agent_id} in turn {turn_count + 1}")
+        # Log the agent's thoughts to file only
+        current_thoughts = current_agent.get_memory_from_store(
+            "current_thoughts", [])
+        if current_thoughts:
+            # Only log to file - never to console here
+            logger.info(
+                f"Agent {current_agent.agent_id}'s thoughts for turn {turn_count + 1}:")
+            for i, thought in enumerate(current_thoughts):
+                logger.info(f"  Thought {i+1}: {thought}")
+
+            # Completely skip console output - it should already have been handled earlier
+        else:
+            logger.warning(
+                f"No thoughts found for agent {current_agent.agent_id} in turn {turn_count + 1}")
 
         # Display the formatted action with better highlighting
         action_display = game_logger.format_action_for_display(

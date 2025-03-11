@@ -16,13 +16,20 @@ from ..tools.discard import _discard_impl
 # Set up logging
 logger = logging.getLogger(__name__)
 
+# Add a new DEBUG level check to reduce console noise
+
+
+def debug_only(message):
+    """Log only if debug level is enabled"""
+    logger.debug(message)
+
 
 def analyze_game_state(
     state: Dict[str, Any],
     config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Analyze the game state and extract relevant information.
+    Analyze the current game state.
 
     Args:
         state: The current state
@@ -35,20 +42,21 @@ def analyze_game_state(
     if config is None:
         config = {}
 
-    # Debug logging
-    logger.info(
+    # Move debug-level logging to debug_only
+    debug_only(
         f"analyze_game_state called with state keys: {list(state.keys())}")
-    logger.info(
+    debug_only(
         f"analyze_game_state called with config keys: {list(config.keys())}")
 
+    # Use model from config
     model = config.get("model")
     agent_id = config.get("agent_id")
     agent_instance = config.get("agent_instance")
 
-    # Debug logging
-    logger.info(f"model from config: {model}")
-    logger.info(f"agent_id from config: {agent_id}")
-    logger.info(f"agent_id from state: {state.get('agent_id')}")
+    # Use debug_only for model and agent debugging
+    debug_only(f"model from config: {model}")
+    debug_only(f"agent_id from config: {agent_id}")
+    debug_only(f"agent_id from state: {state.get('agent_id')}")
 
     if not model:
         raise ValueError("Model not provided in config")
@@ -60,7 +68,12 @@ def analyze_game_state(
     if agent_id is None:
         raise ValueError("Agent ID not provided in config or state")
 
-    logger.info(f"Agent {agent_id} analyzing game state")
+    # Check if we've already logged for this execution path to prevent duplicate logging
+    execution_path = state.get("execution_path", [])
+    # Only log if this is a new execution of analyze_game_state
+    if "analyze_game_state" not in execution_path:
+        # Keep this log as it's informative but make it short
+        logger.info(f"Agent {agent_id} analyzing game state")
 
     # Create a copy of the state to avoid modifying the original
     new_state = state.copy()
@@ -123,10 +136,10 @@ def generate_thoughts(
     if config is None:
         config = {}
 
-    # Debug logging
-    logger.info(
+    # Move debug logging to debug_only
+    debug_only(
         f"generate_thoughts called with state keys: {list(state.keys())}")
-    logger.info(
+    debug_only(
         f"generate_thoughts called with config keys: {list(config.keys())}")
 
     # Use thought_model if available, otherwise use regular model
@@ -134,10 +147,10 @@ def generate_thoughts(
     agent_id = config.get("agent_id")
     agent_instance = config.get("agent_instance")
 
-    # Debug logging
-    logger.info(f"model from config: {model}")
-    logger.info(f"agent_id from config: {agent_id}")
-    logger.info(f"agent_id from state: {state.get('agent_id')}")
+    # Move model debug info to debug_only
+    debug_only(f"model from config: {model}")
+    debug_only(f"agent_id from config: {agent_id}")
+    debug_only(f"agent_id from state: {state.get('agent_id')}")
 
     if not model:
         raise ValueError("Model not provided in config")
@@ -149,7 +162,12 @@ def generate_thoughts(
     if agent_id is None:
         raise ValueError("Agent ID not provided in config or state")
 
-    logger.info(f"Agent {agent_id} generating thoughts")
+    # Check if we've already logged for this execution path to prevent duplicate logging
+    execution_path = state.get("execution_path", [])
+    # Only log if this is a new execution of generate_thoughts
+    if "generate_thoughts" not in execution_path:
+        # Keep this log as it's informative
+        logger.info(f"Agent {agent_id} generating thoughts")
 
     # Create a copy of the state to avoid modifying the original
     new_state = state.copy()
@@ -227,12 +245,17 @@ def generate_thoughts(
     # Store the thoughts in the state
     new_state["current_thoughts"] = thoughts
 
-    # Log the thoughts for debugging
-    logger.info(f"Generated thoughts: {thoughts}")
+    # Log the thoughts for debugging (only to file, not console)
+    # Only log if this is the first time these thoughts are being generated
+    thoughts_hash = hashlib.md5(str(thoughts).encode()).hexdigest()
+    if "thoughts_hash" not in state or state.get("thoughts_hash") != thoughts_hash:
+        # File logging only, no console output
+        logger.debug("Generated thoughts:")
+        for i, thought in enumerate(thoughts):
+            logger.debug(f"  • {thought}")
     logger.debug(f"State keys: {new_state.keys()}")
 
     # Store a hash of the thoughts for tracking
-    thoughts_hash = hashlib.md5(str(thoughts).encode()).hexdigest()
     new_state["thoughts_hash"] = thoughts_hash
 
     return new_state
@@ -362,7 +385,7 @@ def propose_action(
     config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Propose an action based on the game state analysis and thoughts.
+    Propose an action based on the game state and thoughts.
 
     Args:
         state: The current state
@@ -375,19 +398,20 @@ def propose_action(
     if config is None:
         config = {}
 
-    # Debug logging
-    logger.info(f"propose_action called with state keys: {list(state.keys())}")
-    logger.info(
+    # Move debug logging to debug_only
+    debug_only(f"propose_action called with state keys: {list(state.keys())}")
+    debug_only(
         f"propose_action called with config keys: {list(config.keys())}")
 
+    # Use model from config
     model = config.get("model")
     agent_id = config.get("agent_id")
     agent_instance = config.get("agent_instance")
 
-    # Debug logging
-    logger.info(f"model from config: {model}")
-    logger.info(f"agent_id from config: {agent_id}")
-    logger.info(f"agent_id from state: {state.get('agent_id')}")
+    # Move debug logging to debug_only
+    debug_only(f"model from config: {model}")
+    debug_only(f"agent_id from config: {agent_id}")
+    debug_only(f"agent_id from state: {state.get('agent_id')}")
 
     if not model:
         raise ValueError("Model not provided in config")
@@ -399,6 +423,7 @@ def propose_action(
     if agent_id is None:
         raise ValueError("Agent ID not provided in config or state")
 
+    # Keep this log as it's informative
     logger.info(f"Agent {agent_id} proposing action")
 
     # Create a copy of the state to avoid modifying the original
@@ -539,12 +564,12 @@ def _extract_thoughts(content: str) -> List[str]:
     Extract thoughts from the model's response.
 
     Args:
-        content: Content of the model's response
+        content: The content of the model's response
 
     Returns:
-        List of extracted thoughts
+        A list of extracted thoughts
     """
-    if not content or not content.strip():
+    if not content:
         return []
 
     thoughts = []
@@ -555,7 +580,7 @@ def _extract_thoughts(content: str) -> List[str]:
     if numbered_matches:
         thoughts = [match[1].strip()
                     for match in numbered_matches if match[1].strip()]
-        logger.info(
+        debug_only(
             f"Extracted {len(thoughts)} thoughts with simple numbered format")
         return thoughts
 
@@ -566,7 +591,7 @@ def _extract_thoughts(content: str) -> List[str]:
     if thought_matches:
         thoughts = [match.strip()
                     for match in thought_matches if match.strip()]
-        logger.info(f"Extracted {len(thoughts)} thoughts with THOUGHT prefix")
+        debug_only(f"Extracted {len(thoughts)} thoughts with THOUGHT prefix")
         return thoughts
 
     # If no explicit THOUGHT prefixes, try alternative numbered thoughts
@@ -575,7 +600,7 @@ def _extract_thoughts(content: str) -> List[str]:
     if alt_numbered_matches:
         thoughts = [match.strip()
                     for match in alt_numbered_matches if match.strip()]
-        logger.info(
+        debug_only(
             f"Extracted {len(thoughts)} thoughts with alternative numbered format")
         return thoughts
 
@@ -589,7 +614,7 @@ def _extract_thoughts(content: str) -> List[str]:
         matches = re.findall(pattern, content, re.DOTALL)
         if matches:
             thoughts = [match.strip() for match in matches if match.strip()]
-            logger.info(
+            debug_only(
                 f"Extracted {len(thoughts)} thoughts with labeled format")
             return thoughts
 
@@ -599,7 +624,7 @@ def _extract_thoughts(content: str) -> List[str]:
         # Filter out very short paragraphs and headers
         thoughts = [p for p in paragraphs if len(
             p) > 15 and not p.startswith('#')]
-        logger.info(f"Extracted {len(thoughts)} thoughts from paragraphs")
+        debug_only(f"Extracted {len(thoughts)} thoughts from paragraphs")
         if thoughts:
             return thoughts
 
@@ -657,9 +682,9 @@ def execute_action(state: AgentStateDict, config: Optional[Dict[str, Any]] = Non
     """
     logger.info("Executing proposed action")
 
-    # Debug logging
-    logger.info(f"execute_action called with state keys: {list(state.keys())}")
-    logger.info(
+    # Move debug logging to debug_only
+    debug_only(f"execute_action called with state keys: {list(state.keys())}")
+    debug_only(
         f"execute_action called with config keys: {list(config.keys()) if config else []}")
 
     # Create a copy of the state to avoid modifying the original
@@ -670,10 +695,10 @@ def execute_action(state: AgentStateDict, config: Optional[Dict[str, Any]] = Non
         agent_instance = config.get("agent_instance") if config else None
         agent_id = config.get("agent_id") if config else state.get("agent_id")
 
-        # Debug logging
-        logger.info(
+        # Move debug logging to debug_only
+        debug_only(
             f"agent_id from config: {config.get('agent_id') if config else None}")
-        logger.info(f"agent_id from state: {state.get('agent_id')}")
+        debug_only(f"agent_id from state: {state.get('agent_id')}")
 
         # Fix: Properly handle agent_id
         if agent_id is None:
@@ -775,9 +800,9 @@ def handle_error(state: AgentStateDict, config: Optional[Dict[str, Any]] = None)
     """
     logger.info("Handling error in action execution")
 
-    # Debug logging
-    logger.info(f"handle_error called with state keys: {list(state.keys())}")
-    logger.info(
+    # Move debug logging to debug_only
+    debug_only(f"handle_error called with state keys: {list(state.keys())}")
+    debug_only(
         f"handle_error called with config keys: {list(config.keys()) if config else []}")
 
     # Create a copy of the state to avoid modifying the original
@@ -794,10 +819,10 @@ def handle_error(state: AgentStateDict, config: Optional[Dict[str, Any]] = None)
     agent_instance = config.get("agent_instance") if config else None
     agent_id = config.get("agent_id") if config else state.get("agent_id")
 
-    # Debug logging
-    logger.info(
+    # Move debug logging to debug_only
+    debug_only(
         f"agent_id from config: {config.get('agent_id') if config else None}")
-    logger.info(f"agent_id from state: {state.get('agent_id')}")
+    debug_only(f"agent_id from state: {state.get('agent_id')}")
 
     # Fix: Properly handle agent_id
     if agent_id is None:
