@@ -347,15 +347,28 @@ def _normalize_tool_name(tool_name: str) -> str:
         "clue": "give_clue_tool",
     }
 
+    # If the tool name already ends with "_tool", return it as is
+    if tool_name.endswith("_tool"):
+        return tool_name
+
     # Convert to lowercase for case-insensitive matching
     lower_tool_name = tool_name.lower()
 
-    # Check if the tool name is in the map
+    # Check for exact matches first
+    if lower_tool_name in tool_name_map:
+        return tool_name_map[lower_tool_name]
+
+    # Then check for partial matches
     for key, value in tool_name_map.items():
         if key in lower_tool_name:
             return value
 
-    # If not found in the map, return the original
+    # If not found in the map, return the original with "_tool" appended
+    # This ensures consistency with the expected format
+    if not tool_name.endswith("_tool"):
+        return f"{tool_name}_tool"
+
+    # If all else fails, return the original
     return tool_name
 
 
@@ -775,10 +788,34 @@ def execute_action(state: AgentStateDict, config: Optional[Dict[str, Any]] = Non
                 timestamp=state.get("timestamp", "")
             )
 
+            # Create a properly formatted action for the game engine
+            if tool_name == "play_card_tool":
+                new_state["action"] = {
+                    "type": "play_card",
+                    "card_index": tool_args.get("card_index", 0)
+                }
+            elif tool_name == "give_clue_tool":
+                new_state["action"] = {
+                    "type": "give_clue",
+                    "target_id": tool_args.get("target_id", 0),
+                    "clue": {
+                        "type": tool_args.get("clue_type", "color"),
+                        "value": tool_args.get("clue_value", "red")
+                    }
+                }
+            elif tool_name == "discard_tool":
+                new_state["action"] = {
+                    "type": "discard",
+                    "card_index": tool_args.get("card_index", 0)
+                }
+
             # Store in agent memory if available
             if agent_instance and hasattr(agent_instance, "store_memory"):
                 agent_instance.store_memory(
                     "action_result", new_state["action_result"])
+                # Also store the formatted action
+                if "action" in new_state:
+                    agent_instance.store_memory("action", new_state["action"])
 
         return new_state
     except Exception as e:

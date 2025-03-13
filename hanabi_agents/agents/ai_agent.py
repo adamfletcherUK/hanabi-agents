@@ -399,12 +399,45 @@ class AIAgent(Agent):
             }
         )
 
+        # Log the result keys for debugging
+        logger.info(f"Result keys from reasoning graph: {list(result.keys())}")
+
         # Extract the action from the result
         action = result.get("action", {})
         if not action:
             logger.warning(
-                f"No action found in result, using fallback action")
+                f"No action found in result, checking for action_result")
+            # Try to extract action from action_result
+            action_result = result.get("action_result", {})
+            if action_result and hasattr(action_result, "action") and action_result.action:
+                logger.info(
+                    f"Found action in action_result: {action_result.action}")
+                # Try to convert the action_result to a proper action
+                if action_result.action == "play_card_tool" and hasattr(action_result, "args"):
+                    action = {
+                        "type": "play_card",
+                        "card_index": action_result.args.get("card_index", 0)
+                    }
+                elif action_result.action == "give_clue_tool" and hasattr(action_result, "args"):
+                    action = {
+                        "type": "give_clue",
+                        "target_id": action_result.args.get("target_id", 0),
+                        "clue": {
+                            "type": action_result.args.get("clue_type", "color"),
+                            "value": action_result.args.get("clue_value", "red")
+                        }
+                    }
+                elif action_result.action == "discard_tool" and hasattr(action_result, "args"):
+                    action = {
+                        "type": "discard",
+                        "card_index": action_result.args.get("card_index", 0)
+                    }
+
+        if not action:
+            logger.warning(f"No action found in result, using fallback action")
             return self._fallback_action(game_state)
+
+        logger.info(f"Extracted action: {action}")
 
         # Extract the thoughts from the result
         thoughts = result.get("current_thoughts", [])
@@ -735,8 +768,10 @@ class AIAgent(Agent):
             return {
                 "type": "give_clue",
                 "target_id": next_player,
-                "clue_type": "number",
-                "clue_value": "1"
+                "clue": {
+                    "type": "number",
+                    "value": "1"
+                }
             }
         # Otherwise, discard the first card
         return {
