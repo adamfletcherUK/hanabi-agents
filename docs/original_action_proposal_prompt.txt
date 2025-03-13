@@ -1,0 +1,71 @@
+prompt += """
+## Available Tools
+
+You have access to the following tools:
+
+1. play_card_tool: Play a card from your hand
+   - card_index: Index of the card to play (0-indexed)
+
+2. give_clue_tool: Give a clue to another player
+   - target_id: ID of the player to give the clue to
+   - clue_type: Type of clue to give ("color" or "number")
+   - clue_value: Value of the clue (e.g., "red", "1")
+
+3. discard_tool: Discard a card from your hand
+   - card_index: Index of the card to discard (0-indexed)
+
+IMPORTANT: You MUST use the EXACT tool names as specified above:
+- Use "play_card_tool" (not "play", "play_card", etc.)
+- Use "give_clue_tool" (not "clue", "give_clue", etc.)
+- Use "discard_tool" (not "discard", "discard_card", etc.)
+"""
+
+    # Add a clear warning about discarding when at max clue tokens
+    if game_state.clue_tokens >= game_state.max_clue_tokens:
+        prompt += f"""
+## IMPORTANT RESTRICTION
+⚠️ You currently have {game_state.clue_tokens}/{game_state.max_clue_tokens} clue tokens, which is the maximum.
+⚠️ You CANNOT discard when at maximum clue tokens.
+⚠️ You MUST either play a card or give a clue.
+"""
+
+    prompt += """
+## Action Proposal Task
+
+Based on your analysis and thoughts, you must provide a structured JSON response with your chosen action.
+
+Your response should follow this structure:
+```json
+{
+  "action_type": "one of: play_card_tool, give_clue_tool, discard_tool",
+  "explanation": "Detailed explanation of how this action addresses each of your thoughts",
+  "parameters": {
+    // For play_card_tool or discard_tool:
+    "card_index": 0, // Index of the card (0-4)
+    
+    // For give_clue_tool:
+    "target_id": 1, // ID of the player to give a clue to
+    "clue_type": "color or number", // Type of clue
+    "clue_value": "red, blue, green, yellow, white OR 1, 2, 3, 4, 5" // Value of the clue
+  }
+}
+```
+
+IMPORTANT: 
+- You MUST provide a valid JSON object with the exact structure shown above
+- Your action_type MUST be one of: "play_card_tool", "give_clue_tool", or "discard_tool"
+- Your parameters must match the action type (card_index for play/discard, target_id/clue_type/clue_value for clues)
+- Your explanation should address each of your thoughts, numbered to match the thought list above
+- When giving clues, make sure the clue will actually affect at least one card in the target player's hand
+- Check the "Valid clues" section above to ensure your clue is valid
+"""
+
+    # Add error information if available
+    if recent_errors and len(recent_errors) > 0:
+        prompt += "\n## Recent Errors to Consider\n"
+        for error in recent_errors:
+            action_type = error.get("action_type", "unknown")
+            guidance = error.get("guidance", "No guidance available.")
+            prompt += f"- Error with {action_type} action: {guidance}\n"
+
+    return prompt

@@ -2,6 +2,7 @@ from typing import Dict, Any, List, Optional, Union
 import os
 import logging
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 from .base import Agent
@@ -12,6 +13,7 @@ from .tools import play_card_tool, give_clue_tool, discard_tool
 from .reasoning.nodes import _normalize_tool_name, execute_action
 import datetime
 from .state.agent_state import AgentMemory, ActionError, ActionResult, AgentStateDict
+from .reasoning.schemas import ActionProposal
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,17 +28,23 @@ class AIAgent(Agent):
     generate strategic thoughts, and propose actions.
     """
 
-    def __init__(self, agent_id: int, name: str = None, model_name: str = None, temperature: float = 0.0):
+    def __init__(
+        self,
+        model_name: str = None,
+        temperature: float = 0.0,
+        agent_id: int = 0,
+        **kwargs
+    ):
         """
         Initialize the AI agent.
 
         Args:
             agent_id: The ID of the agent
-            name: The name of the agent
-            model_name: The name of the model to use
+            model_name: The name of the model to use (defaults to env var)
             temperature: The temperature to use for the model
+            **kwargs: Additional arguments including name
         """
-        super().__init__(agent_id, name)
+        super().__init__(agent_id, kwargs.get("name"))
 
         # Set up logging to suppress detailed debugging
         logging.getLogger("openai").setLevel(logging.WARNING)
@@ -44,8 +52,27 @@ class AIAgent(Agent):
         logging.getLogger("langchain_core").setLevel(logging.WARNING)
         logging.getLogger("langgraph").setLevel(logging.WARNING)
 
-        # Initialize the model
-        self.model = self._initialize_model(model_name, temperature)
+        # Get API key from environment
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            logger.error("OPENAI_API_KEY not found in environment variables")
+            raise ValueError(
+                "OPENAI_API_KEY not found. Please set it in your .env file or environment.")
+
+        # Use default model if none specified
+        if model_name is None:
+            model_name = os.getenv("MODEL_NAME", "gpt-4")
+            logger.info(f"Using model from environment: {model_name}")
+
+        self.model_name = model_name
+        self.temperature = temperature
+
+        # Initialize models for different purposes
+        self.thought_model = self._initialize_model(
+            use_json_format=False)  # For generating thoughts
+        self.action_model = self._initialize_model(
+            use_json_format=True)    # For proposing actions
+        self.model = self.thought_model  # Default model for backward compatibility
 
         # Initialize agent memory
         self.agent_memory = AgentMemory()
@@ -65,178 +92,26 @@ class AIAgent(Agent):
         # Initialize reasoning graph
         self.reasoning_graph = setup_reasoning_graph(self)
 
-    def _initialize_model(self, model_name: str = None, temperature: float = 0.0) -> ChatOpenAI:
+    def _initialize_model(self, use_json_format: bool = False) -> ChatOpenAI:
         """
-        Initialize the language model.
+        Initialize the model with optional structured output support.
 
         Args:
-            model_name: Name of the model to use
-            temperature: The temperature to use for the model
-
-        Returns:
-            Initialized language model
+            use_json_format: Whether to enable JSON response format
         """
-        # Get API key from environment
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            logger.error("OPENAI_API_KEY not found in environment variables")
-            raise ValueError(
-                "OPENAI_API_KEY not found. Please set it in your .env file or environment.")
+        model_kwargs = {}
+        if use_json_format:
+            model_kwargs["response_format"] = {"type": "json_object"}
+            # We're using structured output instead of function calling
+            model_kwargs["functions"] = None
 
-        # Use default model if none specified
-        if model_name is None:
-            model_name = os.getenv("MODEL_NAME", "o3-mini")
-            logger.info(f"Using model from environment: {model_name}")
-
-        # Define the tools
-        play_card_tool = {
-            "type": "function",
-            "function": {
-                "name": "play_card_tool",
-                "description": "Play a card from your hand",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "card_index": {
-                            "type": "integer",
-                            "description": "Index of the card to play (0-indexed)"
-                        }
-                    },
-                    "required": ["card_index"],
-                    "additionalProperties": False
-                }
-            }
-        }
-
-        give_clue_tool = {
-            "type": "function",
-            "function": {
-                "name": "give_clue_tool",
-                "description": "Give a clue to another player",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "target_id": {
-                            "type": "integer",
-                            "description": "ID of the player to give the clue to"
-                        },
-                        "clue_type": {
-                            "type": "string",
-                            "enum": ["color", "number"],
-                            "description": "Type of clue to give"
-                        },
-                        "clue_value": {
-                            "type": "string",
-                            "description": "Value of the clue (e.g., 'red', '1')"
-                        }
-                    },
-                    "required": ["target_id", "clue_type", "clue_value"],
-                    "additionalProperties": False
-                }
-            }
-        }
-
-        discard_tool = {
-            "type": "function",
-            "function": {
-                "name": "discard_tool",
-                "description": "Discard a card from your hand",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "card_index": {
-                            "type": "integer",
-                            "description": "Index of the card to discard (0-indexed)"
-                        }
-                    },
-                    "required": ["card_index"],
-                    "additionalProperties": False
-                }
-            }
-        }
-
-        # Initialize the model with the tools
-        model = ChatOpenAI(
-            model=model_name,
-            api_key=api_key,
+        return ChatOpenAI(
+            model=self.model_name,
+            api_key=os.getenv("OPENAI_API_KEY"),
             verbose=True,  # Enable verbose mode for better debugging
-            temperature=temperature,
-            tools=[play_card_tool, give_clue_tool, discard_tool]
+            temperature=self.temperature,
+            model_kwargs=model_kwargs
         )
-
-        # Define tool schemas - simplified approach without strict property
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "play_card_tool",
-                    "description": "Play a card from the agent's hand",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "card_index": {
-                                "type": "integer",
-                                "description": "Index of the card to play (0-indexed, must be between 0 and 4)"
-                            }
-                        },
-                        "required": ["card_index"],
-                        "additionalProperties": False
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "give_clue_tool",
-                    "description": "Give a clue to another player about their cards",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "target_id": {
-                                "type": "integer",
-                                "description": "ID of the player to give the clue to"
-                            },
-                            "clue_type": {
-                                "type": "string",
-                                "enum": ["color", "number"],
-                                "description": "Type of clue to give"
-                            },
-                            "clue_value": {
-                                "type": "string",
-                                "description": "Value of the clue (e.g., 'red', '1')"
-                            }
-                        },
-                        "required": ["target_id", "clue_type", "clue_value"],
-                        "additionalProperties": False
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "discard_tool",
-                    "description": "Discard a card from the agent's hand",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "card_index": {
-                                "type": "integer",
-                                "description": "Index of the card to discard (0-indexed, must be between 0 and 4)"
-                            }
-                        },
-                        "required": ["card_index"],
-                        "additionalProperties": False
-                    }
-                }
-            }
-        ]
-
-        # Create two model versions - one for thought generation (without forced tools) and one for action selection (with forced tools)
-        # No forced tool choice for thought generation
-        self.thought_model = model.bind(tools=tools)
-
-        # Always use tool_choice='required' to force the model to call a tool for action selection
-        return model.bind(tools=tools, tool_choice="required")
 
     def participate_in_discussion(self, game_state: GameState, discussion_history: List[Dict[str, Any]]) -> str:
         """
@@ -277,7 +152,6 @@ class AIAgent(Agent):
                 "agent_id": self.agent_id,
                 "agent_instance": self,
                 "model": self.model,  # For action proposal
-                "thought_model": self.thought_model,  # For thought generation
                 "configurable": {
                     "conversation_id": conversation_id,
                     "thread_id": thread_id  # Add thread_id for checkpoint system
@@ -391,7 +265,6 @@ class AIAgent(Agent):
                 "agent_id": self.agent_id,
                 "agent_instance": self,
                 "model": self.model,
-                "thought_model": self.thought_model,
                 "configurable": {
                     "conversation_id": conversation_id,
                     "thread_id": thread_id  # Add thread_id for checkpoint system
@@ -778,3 +651,51 @@ class AIAgent(Agent):
             "type": "discard",
             "card_index": 0
         }
+
+    def propose_action(
+        self,
+        game_state: Dict[str, Any],
+        card_knowledge: Dict[str, Any],
+        current_thoughts: List[str],
+        discussion_history: List[Dict[str, Any]],
+        game_history: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Propose an action using structured output."""
+        from .prompts.action_proposal import create_action_proposal_prompt
+
+        # Create the prompt
+        prompt = create_action_proposal_prompt(
+            game_state=game_state,
+            agent_id=self.agent_id,
+            card_knowledge=card_knowledge,
+            current_thoughts=current_thoughts,
+            discussion_history=discussion_history,
+            game_history=game_history
+        )
+
+        # Create a human message with the prompt
+        message = HumanMessage(content=prompt)
+
+        try:
+            # Use the action model for structured output
+            response = self.action_model.invoke([message])
+
+            # Parse the response into an ActionProposal
+            action_proposal = ActionProposal.parse_raw(response.content)
+
+            # Return the action and explanation
+            return {
+                "action": action_proposal.action.dict(),
+                "explanation": action_proposal.explanation
+            }
+
+        except Exception as e:
+            logger.error(f"Error in propose_action: {e}")
+            # Fallback to default action
+            return {
+                "action": {
+                    "type": "discard",
+                    "card_index": 0
+                },
+                "explanation": "Error occurred, falling back to default action"
+            }

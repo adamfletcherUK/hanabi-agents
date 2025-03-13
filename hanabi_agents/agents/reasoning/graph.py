@@ -35,7 +35,7 @@ def setup_reasoning_graph(agent):
             config = {}
         # Ensure model is in config
         if "model" not in config:
-            config["model"] = agent.model
+            config["model"] = agent.thought_model
         if "agent_id" not in config:
             config["agent_id"] = agent.agent_id
         if "agent_instance" not in config:
@@ -54,11 +54,9 @@ def setup_reasoning_graph(agent):
     def generate_thoughts_with_model(state, config=None):
         if config is None:
             config = {}
-        # Ensure thought_model is in config
-        if "thought_model" not in config:
-            config["thought_model"] = agent.thought_model
+        # Ensure model is in config
         if "model" not in config:
-            config["model"] = agent.model
+            config["model"] = agent.thought_model
         if "agent_id" not in config:
             config["agent_id"] = agent.agent_id
         if "agent_instance" not in config:
@@ -77,7 +75,7 @@ def setup_reasoning_graph(agent):
             config = {}
         # Ensure model is in config
         if "model" not in config:
-            config["model"] = agent.model
+            config["model"] = agent.action_model
         if "agent_id" not in config:
             config["agent_id"] = agent.agent_id
         if "agent_instance" not in config:
@@ -142,7 +140,10 @@ def setup_reasoning_graph(agent):
     # Add conditional edges for error handling
     def has_error(state: AgentStateDict) -> str:
         """Check if there is an error in the state."""
-        return "handle_error" if state.get("error") else END
+        # Only handle errors if we haven't already tried to handle this error
+        if state.get("error") and not state.get("error_handled"):
+            return "handle_error"
+        return END
 
     graph.add_conditional_edges(
         "execute_action",
@@ -153,8 +154,8 @@ def setup_reasoning_graph(agent):
         }
     )
 
-    # Add edge from error handler back to propose action
-    graph.add_edge("handle_error", "propose_action")
+    # Add edge from error handler to END instead of back to propose_action
+    graph.add_edge("handle_error", END)
 
     # Compile the graph with memory and state persistence
     # In LangGraph 0.3.5+, checkpointer may not be supported

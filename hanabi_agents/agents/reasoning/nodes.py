@@ -1,9 +1,10 @@
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 from langchain_core.messages import HumanMessage, AIMessage
 import logging
 from ..prompts.state_analysis import create_state_analysis_prompt
 from ..prompts.thought_generation import create_thought_generation_prompt
 from ..prompts.action_proposal import create_action_proposal_prompt
+from .schemas import ActionProposal, PlayCardAction, GiveClueAction, DiscardAction
 import json
 import uuid
 import re
@@ -12,6 +13,7 @@ from ..state.agent_state import AgentStateDict, ActionError, ActionResult
 from ..tools.play_card import _play_card_impl
 from ..tools.give_clue import _give_clue_impl
 from ..tools.discard import _discard_impl
+from datetime import datetime
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -393,6 +395,34 @@ def _has_required_tools(model) -> bool:
     return all(tool in model_tool_names for tool in required_tools)
 
 
+def is_valid_action(action: Union[PlayCardAction, GiveClueAction, DiscardAction], game_state: Dict[str, Any], agent_id: int) -> bool:
+    """Validate if the action is valid for the current game state."""
+    if isinstance(action, PlayCardAction):
+        return (
+            0 <= action.card_index < len(game_state.hands[agent_id])
+            and game_state.clue_tokens > 0
+        )
+    elif isinstance(action, GiveClueAction):
+        return (
+            action.target_id in game_state.hands
+            and action.target_id != agent_id
+            and game_state.clue_tokens > 0
+        )
+    elif isinstance(action, DiscardAction):
+        return (
+            0 <= action.card_index < len(game_state.hands[agent_id])
+            and game_state.clue_tokens < game_state.max_clue_tokens
+        )
+    return False
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
+
 def propose_action(
     state: Dict[str, Any],
     config: Optional[Dict[str, Any]] = None
@@ -454,122 +484,103 @@ def propose_action(
     discussion_history = state.get("discussion_history", [])
     game_history = state.get("game_history", [])
 
-    # Create the prompt for action proposal
-    prompt = create_action_proposal_prompt(
-        game_state=game_state,
-        agent_id=agent_id,
-        card_knowledge=card_knowledge,
-        current_thoughts=thoughts,
-        discussion_history=discussion_history,
-        game_history=game_history
-    )
+    # Log the current thoughts
+    logger.info("Current thoughts:")
+    for i, thought in enumerate(thoughts):
+        logger.info(f"  {i+1}. {thought}")
 
-    # Log the prompt for debugging
-    logger.debug(f"Action proposal prompt: {prompt}")
-
-    # Create a human message with the prompt
-    message = HumanMessage(content=prompt)
-
-    # Send the message to the model
-    response = model.invoke([message])
-
-    # Log the response for debugging
-    logger.debug(f"Action proposal response: {response}")
-
-    # Add the response to the messages
-    if "messages" not in new_state:
-        new_state["messages"] = []
-    new_state["messages"].append(response)
-
-    # Extract the tool call from the response
-    tool_calls = []
-    if hasattr(response, "tool_calls") and response.tool_calls:
-        tool_calls = response.tool_calls
+    # Log the current state for debugging
+    # Convert GameState to dict if it's an object
+    if hasattr(game_state, 'dict'):
+        game_state_dict = game_state.dict()
     else:
-        # Try to extract tool calls from the content
-        extracted_tool_call = _extract_tool_call_from_text(response.content)
-        if extracted_tool_call:
-            tool_calls = [extracted_tool_call]
+        game_state_dict = game_state
 
-    # Store the tool calls in the state
-    new_state["proposed_tool_calls"] = tool_calls
+    logger.debug(
+        f"Current game state: {json.dumps(game_state_dict, indent=2, cls=DateTimeEncoder)}")
+    logger.debug(f"Current thoughts: {json.dumps(thoughts, indent=2)}")
+    logger.debug(f"Card knowledge: {json.dumps(card_knowledge, indent=2)}")
 
-    # Store the tool calls in the agent's memory if available
-    if agent_instance and hasattr(agent_instance, "store_tool_calls"):
-        agent_instance.store_tool_calls(tool_calls, new_state)
+    try:
+        # Create the prompt for action proposal
+        prompt = create_action_proposal_prompt(
+            game_state=game_state,
+            agent_id=agent_id,
+            card_knowledge=card_knowledge,
+            current_thoughts=thoughts,
+            discussion_history=discussion_history,
+            game_history=game_history
+        )
 
-    # Convert the tool call to the format expected by the game engine
-    if tool_calls:
-        tool_call = tool_calls[0]
-        tool_name = _normalize_tool_name(tool_call.get("name", ""))
-        tool_args = tool_call.get("args", {})
+        # Log the prompt for debugging
+        logger.debug(f"Action proposal prompt: {prompt}")
 
-        if tool_name == "play_card_tool":
-            new_state["action"] = {
-                "type": "play_card",
-                "card_index": tool_args.get("card_index", 0)
-            }
-        elif tool_name == "give_clue_tool":
-            new_state["action"] = {
-                "type": "give_clue",
-                "target_id": tool_args.get("target_id", 0),
-                "clue": {
-                    "type": tool_args.get("clue_type", "color"),
-                    "value": tool_args.get("clue_value", "red")
-                }
-            }
-        elif tool_name == "discard_tool":
-            # Check if at max clue tokens
-            if game_state.get("clue_tokens", 0) >= game_state.get("max_clue_tokens", 8):
-                logger.warning(
-                    f"Agent {agent_id} attempted to discard when at max clue tokens")
-                # Find a valid target for a clue
-                target_id = None
-                for player_id in game_state.get("hands", {}):
-                    if player_id != agent_id and game_state["hands"][player_id]:
-                        target_id = player_id
-                        break
+        # Create a human message with the prompt
+        message = HumanMessage(content=prompt)
 
-                if target_id is not None:
-                    # Find a valid clue to give
-                    target_hand = game_state["hands"][target_id]
-                    if target_hand:
-                        # Try to give a color clue
-                        new_state["action"] = {
-                            "type": "give_clue",
-                            "target_id": target_id,
-                            "clue": {
-                                "type": "color",
-                                "value": target_hand[0]["color"]
-                            }
-                        }
-                else:
-                    # If we couldn't find a valid clue target, try to play a card
-                    new_state["action"] = {
-                        "type": "play_card",
-                        "card_index": 0
-                    }
-            else:
-                new_state["action"] = {
-                    "type": "discard",
-                    "card_index": tool_args.get("card_index", 0)
-                }
-        else:
-            logger.warning(
-                f"Unknown tool name: {tool_name}, defaulting to discard")
-            new_state["action"] = {
-                "type": "discard",
-                "card_index": 0
-            }
-    else:
-        # If no tool calls were found, create a default action
-        logger.warning(f"No tool calls found, creating default action")
+        # Send the message to the model
+        response = model.invoke([message])
+
+        # Log the response for debugging
+        logger.debug(f"Action proposal response: {response}")
+
+        # Add the response to the messages
+        if "messages" not in new_state:
+            new_state["messages"] = []
+        new_state["messages"].append(response)
+
+        # Parse the response into an ActionProposal
+        try:
+            logger.debug(
+                f"Attempting to parse response content: {response.content}")
+            action_proposal = ActionProposal.parse_raw(response.content)
+            logger.debug(
+                f"Successfully parsed action proposal: {action_proposal}")
+        except Exception as e:
+            logger.error(f"Error parsing action proposal: {e}")
+            logger.error(
+                f"Response content that failed to parse: {response.content}")
+            raise ValueError(f"Failed to parse action proposal: {e}")
+
+        # Validate the action against game state
+        if not is_valid_action(action_proposal.action, game_state, agent_id):
+            logger.error(
+                f"Invalid action for current game state: {action_proposal.action}")
+            raise ValueError("Invalid action for current game state")
+
+        # Store the action and explanation in the state
+        action_dict = action_proposal.action.dict()
+        new_state["action"] = action_dict
+        new_state["explanation"] = action_proposal.explanation
+
+        # Ensure the action is properly stored in the state
+        logger.info(
+            f"Successfully proposed action: {json.dumps(action_dict, indent=2)}")
+        logger.debug(f"Action explanation: {new_state['explanation']}")
+
+        # Store the action in the agent's memory if available
+        if agent_instance and hasattr(agent_instance, "store_memory"):
+            agent_instance.store_memory("proposed_action", action_dict)
+            agent_instance.store_memory(
+                "action_explanation", new_state["explanation"])
+
+        # Log the final state to verify action persistence
+        logger.debug(f"Final state keys: {list(new_state.keys())}")
+        logger.debug(
+            f"Action in state: {json.dumps(new_state.get('action'), indent=2)}")
+
+        return new_state
+
+    except Exception as e:
+        logger.error(f"Error in propose_action: {e}")
+        logger.error(f"Full error details: {str(e)}")
+        # Fallback to current behavior
+        logger.warning("Falling back to default action")
         new_state["action"] = {
             "type": "discard",
             "card_index": 0
         }
-
-    return new_state
+        return new_state
 
 
 def _extract_thoughts(content: str) -> List[str]:
@@ -725,101 +736,91 @@ def execute_action(state: AgentStateDict, config: Optional[Dict[str, Any]] = Non
         if not game_state:
             raise ValueError("Game state not available for action execution")
 
-        # Get the proposed tool calls from the state
-        proposed_tool_calls = state.get("proposed_tool_calls")
+        # Get the proposed action from the state
+        action = state.get("action")
+        logger.debug(
+            f"Retrieved action from state: {json.dumps(action, indent=2)}")
 
-        if not proposed_tool_calls:
-            logger.warning("No proposed tool calls found in state")
+        if not action:
+            logger.warning("No action found in state")
+            # Create a proper ActionResult with dictionary values
             new_state["action_result"] = ActionResult(
-                action="none",
-                result="No action was proposed",
+                action={"type": "none", "args": {}},
+                result={"success": False, "error": "No action was proposed"},
                 timestamp=state.get("timestamp", "")
             )
+            # Also set an error to trigger error handling
+            new_state["error"] = "No action was proposed"
             return new_state
 
-        # Get the first tool call
-        tool_call = proposed_tool_calls[0]
-
-        # Normalize the tool name
-        tool_name = _normalize_tool_name(tool_call.get("name", ""))
-        tool_args = tool_call.get("args", {})
-
-        # Execute the appropriate tool based on the name
+        # Execute the appropriate tool based on the action type
         result = None
-        if tool_name == "play_card_tool":
-            card_index = tool_args.get("card_index", 0)
-            result = _play_card_impl(agent_id, card_index, game_state)
-        elif tool_name == "give_clue_tool":
-            target_id = tool_args.get("target_id", 0)
-            clue_type = tool_args.get("clue_type", "")
-            clue_value = tool_args.get("clue_value", "")
-            result = _give_clue_impl(
-                agent_id, target_id, clue_type, clue_value, game_state)
-        elif tool_name == "discard_tool":
-            # Check for max clue tokens before discarding
-            if game_state.clue_tokens >= game_state.max_clue_tokens:
-                logger.warning(
-                    f"Agent {agent_id} attempted to discard when at max clue tokens")
-                result = {"error": "Cannot discard when at max clue tokens"}
+        action_type = action.get("type")
+        logger.debug(f"Executing action of type: {action_type}")
+
+        try:
+            if action_type == "play_card":
+                card_index = action.get("card_index", 0)
+                logger.debug(f"Playing card at index: {card_index}")
+                result = _play_card_impl(agent_id, card_index, game_state)
+            elif action_type == "give_clue":
+                target_id = action.get("target_id", 0)
+                clue = action.get("clue", {})
+                clue_type = clue.get("type", "color")
+                clue_value = clue.get("value", "")
+                logger.debug(
+                    f"Giving {clue_type} clue with value {clue_value} to player {target_id}")
+                result = _give_clue_impl(
+                    agent_id, target_id, clue_type, clue_value, game_state)
+            elif action_type == "discard":
+                # Check if at max clue tokens
+                if game_state.clue_tokens >= game_state.max_clue_tokens:
+                    logger.warning(
+                        f"Agent {agent_id} attempted to discard when at max clue tokens")
+                    result = {"error": "Cannot discard when at max clue tokens"}
+                else:
+                    card_index = action.get("card_index", 0)
+                    logger.debug(f"Discarding card at index: {card_index}")
+                    result = _discard_impl(agent_id, card_index, game_state)
             else:
-                card_index = tool_args.get("card_index", 0)
-                result = _discard_impl(agent_id, card_index, game_state)
-        else:
-            result = {"error": f"Unknown tool: {tool_name}"}
+                logger.error(f"Unknown action type: {action_type}")
+                result = {"error": f"Unknown action type: {action_type}"}
+        except Exception as e:
+            logger.error(f"Error executing action implementation: {e}")
+            logger.error(f"Full error details: {str(e)}")
+            result = {"error": f"Error executing action: {str(e)}"}
 
         # Check for errors in the result
         if result and "error" in result:
             logger.error(
-                f"Error executing tool {tool_name}: {result['error']}")
+                f"Error executing action {action_type}: {result['error']}")
             new_state["error"] = result["error"]
             new_state["action_error"] = ActionError(
-                action={"name": tool_name, "args": tool_args},
+                action=action,
                 error=result["error"],
                 timestamp=state.get("timestamp", ""),
                 turn=state.get("turn_count", 0)
             )
         else:
             # Store the successful result
-            logger.info(f"Successfully executed tool {tool_name}")
+            logger.info(f"Successfully executed action {action_type}")
+            logger.debug(f"Action result: {json.dumps(result, indent=2)}")
             new_state["action_result"] = ActionResult(
-                action=tool_name,
-                args=tool_args,
+                action=action,
                 result=result,
                 timestamp=state.get("timestamp", "")
             )
-
-            # Create a properly formatted action for the game engine
-            if tool_name == "play_card_tool":
-                new_state["action"] = {
-                    "type": "play_card",
-                    "card_index": tool_args.get("card_index", 0)
-                }
-            elif tool_name == "give_clue_tool":
-                new_state["action"] = {
-                    "type": "give_clue",
-                    "target_id": tool_args.get("target_id", 0),
-                    "clue": {
-                        "type": tool_args.get("clue_type", "color"),
-                        "value": tool_args.get("clue_value", "red")
-                    }
-                }
-            elif tool_name == "discard_tool":
-                new_state["action"] = {
-                    "type": "discard",
-                    "card_index": tool_args.get("card_index", 0)
-                }
 
             # Store in agent memory if available
             if agent_instance and hasattr(agent_instance, "store_memory"):
                 agent_instance.store_memory(
                     "action_result", new_state["action_result"])
-                # Also store the formatted action
-                if "action" in new_state:
-                    agent_instance.store_memory("action", new_state["action"])
+                agent_instance.store_memory("action", action)
 
         return new_state
     except Exception as e:
         logger.error(f"Error in execute_action: {e}")
+        logger.error(f"Full error details: {str(e)}")
         new_state["error"] = str(e)
         return new_state
 
@@ -891,6 +892,7 @@ def handle_error(state: AgentStateDict, config: Optional[Dict[str, Any]] = None)
 
     # Clear the error from the state to avoid infinite loops
     new_state.pop("error", None)
+    new_state["error_handled"] = True
 
     # Add the error to the state's errors list for reference
     errors = new_state.get("errors", [])

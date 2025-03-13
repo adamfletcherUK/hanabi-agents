@@ -1,15 +1,15 @@
 from typing import Dict, Any, List
 from ...game.state import GameState
+from ..reasoning.schemas import ActionProposal
 
 
 def create_action_proposal_prompt(
-    game_state: GameState,
+    game_state: Dict[str, Any],
     agent_id: int,
-    card_knowledge: List[Dict[str, Any]],
+    card_knowledge: Dict[str, Any],
     current_thoughts: List[str],
     discussion_history: List[Dict[str, Any]],
-    game_history: List[Dict[str, Any]],
-    recent_errors: List[Dict[str, Any]] = None
+    game_history: List[Dict[str, Any]]
 ) -> str:
     """
     Create a prompt for proposing an action.
@@ -21,124 +21,40 @@ def create_action_proposal_prompt(
         current_thoughts: Current thoughts about the game state
         discussion_history: History of discussion contributions
         game_history: History of game actions
-        recent_errors: Recent errors from failed actions
 
     Returns:
         Prompt for proposing an action
     """
-    prompt = f"""
-# Hanabi Action Proposal
+    # Get the schema as a JSON string
+    schema_json = ActionProposal.schema_json(indent=2)
 
-You are Player {agent_id} in a game of Hanabi. Based on your analysis and strategic thoughts, propose a specific action to take.
-
-## Current Game State Summary
-
-- Clue tokens: {game_state.clue_tokens}/{game_state.max_clue_tokens}
-- Fuse tokens: {game_state.fuse_tokens}/3
-- Current score: {game_state.score}/25
-- Current player: Player {game_state.current_player} ({"You" if game_state.current_player == agent_id else "Not you"})
-
-## Other Players' Hands and Valid Clues
-"""
-
-    # Add information about other players' hands and valid clues
-    for player_id, hand in game_state.hands.items():
-        if player_id != agent_id:
-            prompt += f"\nPlayer {player_id}'s hand:\n"
-
-            # Show the cards in the player's hand
-            for i, card in enumerate(hand):
-                prompt += f"- Card {i}: {card.color.value} {card.number}\n"
-
-            # Calculate valid clues for this player
-            valid_colors = set()
-            valid_numbers = set()
-
-            for card in hand:
-                valid_colors.add(card.color.value)
-                valid_numbers.add(card.number)
-
-            # Add valid clue information
-            prompt += f"\nValid clues for Player {player_id}:\n"
-            prompt += f"- Colors: {', '.join(sorted(valid_colors))}\n"
-            prompt += f"- Numbers: {', '.join(str(n) for n in sorted(valid_numbers))}\n"
-
-    prompt += """
-## Your Strategic Thoughts
-"""
-
-    # Add the current thoughts
-    for i, thought in enumerate(current_thoughts):
-        prompt += f"{i+1}. {thought}\n"
-
-    prompt += """
-## Available Tools
-
-You have access to the following tools:
-
-1. play_card_tool: Play a card from your hand
-   - card_index: Index of the card to play (0-indexed)
-
-2. give_clue_tool: Give a clue to another player
-   - target_id: ID of the player to give the clue to
-   - clue_type: Type of clue to give ("color" or "number")
-   - clue_value: Value of the clue (e.g., "red", "1")
-
-3. discard_tool: Discard a card from your hand
-   - card_index: Index of the card to discard (0-indexed)
-
-IMPORTANT: You MUST use the EXACT tool names as specified above:
-- Use "play_card_tool" (not "play", "play_card", etc.)
-- Use "give_clue_tool" (not "clue", "give_clue", etc.)
-- Use "discard_tool" (not "discard", "discard_card", etc.)
-"""
-
-    # Add a clear warning about discarding when at max clue tokens
-    if game_state.clue_tokens >= game_state.max_clue_tokens:
-        prompt += f"""
-## IMPORTANT RESTRICTION
-⚠️ You currently have {game_state.clue_tokens}/{game_state.max_clue_tokens} clue tokens, which is the maximum.
-⚠️ You CANNOT discard when at maximum clue tokens.
-⚠️ You MUST either play a card or give a clue.
-"""
-
-    prompt += """
-## Action Proposal Task
-
-Based on your analysis and thoughts, you must provide a structured JSON response with your chosen action.
-
-Your response should follow this structure:
-```json
-{
-  "action_type": "one of: play_card_tool, give_clue_tool, discard_tool",
-  "explanation": "Detailed explanation of how this action addresses each of your thoughts",
-  "parameters": {
-    // For play_card_tool or discard_tool:
-    "card_index": 0, // Index of the card (0-4)
+    return f"""Based on the current game state and your thoughts, propose an action to take.
     
-    // For give_clue_tool:
-    "target_id": 1, // ID of the player to give a clue to
-    "clue_type": "color or number", // Type of clue
-    "clue_value": "red, blue, green, yellow, white OR 1, 2, 3, 4, 5" // Value of the clue
-  }
-}
-```
+Game State:
+{game_state}
 
-IMPORTANT: 
-- You MUST provide a valid JSON object with the exact structure shown above
-- Your action_type MUST be one of: "play_card_tool", "give_clue_tool", or "discard_tool"
-- Your parameters must match the action type (card_index for play/discard, target_id/clue_type/clue_value for clues)
-- Your explanation should address each of your thoughts, numbered to match the thought list above
-- When giving clues, make sure the clue will actually affect at least one card in the target player's hand
-- Check the "Valid clues" section above to ensure your clue is valid
-"""
+Your Thoughts:
+{current_thoughts}
 
-    # Add error information if available
-    if recent_errors and len(recent_errors) > 0:
-        prompt += "\n## Recent Errors to Consider\n"
-        for error in recent_errors:
-            action_type = error.get("action_type", "unknown")
-            guidance = error.get("guidance", "No guidance available.")
-            prompt += f"- Error with {action_type} action: {guidance}\n"
+Discussion History:
+{discussion_history}
 
-    return prompt
+Game History:
+{game_history}
+
+You must return a JSON object that matches this schema exactly:
+{schema_json}
+
+The action must be one of:
+- play_card: Play a card from your hand (card_index: 0-4)
+- give_clue: Give a clue to another player (target_id: player ID, clue: {{type: "color"|"number", value: string}})
+- discard: Discard a card from your hand (card_index: 0-4)
+
+Important rules:
+1. The response must be a valid JSON object
+2. The action must be valid for the current game state
+3. The explanation should clearly justify your choice
+4. Do not add any fields not in the schema
+5. Do not modify the schema structure
+
+Provide your response as a valid JSON object that matches the schema exactly."""
