@@ -113,13 +113,13 @@ class AIAgent(Agent):
                     "type": "function",
                     "function": {
                         "name": "play_card_tool",
-                        "description": "Play a card from your hand",
+                        "description": "Play a card from your hand. IMPORTANT: Use 1-indexed positions (first card = 1, second card = 2, etc.)",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "card_index": {
                                     "type": "integer",
-                                    "description": "The index of the card to play (0-based)"
+                                    "description": "The position of the card to play (1-indexed: first card = 1, second card = 2, etc.)"
                                 }
                             },
                             "required": ["card_index"]
@@ -156,13 +156,13 @@ class AIAgent(Agent):
                     "type": "function",
                     "function": {
                         "name": "discard_tool",
-                        "description": "Discard a card from your hand",
+                        "description": "Discard a card from your hand. IMPORTANT: Use 1-indexed positions (first card = 1, second card = 2, etc.)",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "card_index": {
                                     "type": "integer",
-                                    "description": "The index of the card to discard (0-based)"
+                                    "description": "The position of the card to discard (1-indexed: first card = 1, second card = 2, etc.)"
                                 }
                             },
                             "required": ["card_index"]
@@ -362,6 +362,7 @@ class AIAgent(Agent):
         logger.info(f"Agent {self.agent_id} deciding on action")
 
         # First, check if we have a stored standardized action from the discussion phase
+        # These should already be in 0-indexed format from store_tool_calls
         primary_action = self.get_memory_from_store("primary_action")
         if primary_action:
             logger.info(
@@ -369,6 +370,7 @@ class AIAgent(Agent):
             return primary_action
 
         # If no stored action, check for tool-specific actions
+        # These should already be in 0-indexed format from store_tool_calls
         play_card_action = self.get_memory_from_store("play_card_action")
         if play_card_action:
             logger.info(f"Using stored play_card_action: {play_card_action}")
@@ -436,9 +438,22 @@ class AIAgent(Agent):
                     f"Found action in action_result: {action_result.action}")
                 # Try to convert the action_result to a proper action
                 if action_result.action == "play_card_tool" and hasattr(action_result, "args"):
+                    # Get hand size for validation
+                    hand_size = 0
+                    if hasattr(game_state, 'hands') and len(game_state.hands) > self.agent_id:
+                        hand_size = len(game_state.hands[self.agent_id])
+
+                    # Get the original 1-indexed card position
+                    original_index = action_result.args.get(
+                        "card_index", 1)  # Default to 1 if missing
+
+                    # Validate and convert to 0-indexed
+                    zero_indexed = self.validate_and_convert_index(
+                        original_index, hand_size)
+
                     action = {
                         "type": "play_card",
-                        "card_index": action_result.args.get("card_index", 0)
+                        "card_index": zero_indexed
                     }
                 elif action_result.action == "give_clue_tool" and hasattr(action_result, "args"):
                     action = {
@@ -450,14 +465,41 @@ class AIAgent(Agent):
                         }
                     }
                 elif action_result.action == "discard_tool" and hasattr(action_result, "args"):
+                    # Get hand size for validation
+                    hand_size = 0
+                    if hasattr(game_state, 'hands') and len(game_state.hands) > self.agent_id:
+                        hand_size = len(game_state.hands[self.agent_id])
+
+                    # Get the original 1-indexed card position
+                    original_index = action_result.args.get(
+                        "card_index", 1)  # Default to 1 if missing
+
+                    # Validate and convert to 0-indexed
+                    zero_indexed = self.validate_and_convert_index(
+                        original_index, hand_size)
+
                     action = {
                         "type": "discard",
-                        "card_index": action_result.args.get("card_index", 0)
+                        "card_index": zero_indexed
                     }
 
+        # If we still don't have an action, use fallback
         if not action:
             logger.warning(f"No action found in result, using fallback action")
             return self._fallback_action(game_state)
+
+        # Get hand size for final validation
+        hand_size = 0
+        if hasattr(game_state, 'hands') and len(game_state.hands) > self.agent_id:
+            hand_size = len(game_state.hands[self.agent_id])
+
+        # One last check - make sure any card_index is correctly 0-indexed
+        if action.get("type") in ["play_card", "discard"] and "card_index" in action:
+            # Only convert if it seems to be in 1-indexed format (greater than 0)
+            if action["card_index"] > 0:
+                original_index = action["card_index"]
+                action["card_index"] = self.validate_and_convert_index(
+                    original_index, hand_size)
 
         logger.info(f"Extracted action: {action}")
 
@@ -469,9 +511,7 @@ class AIAgent(Agent):
         # Also store in the memory store for immediate access
         self.store_memory("current_thoughts", thoughts)
 
-        # Store the action in the agent's memory
-        self.agent_memory.proposed_action = action
-        # Also store in the memory store for immediate access
+        # Store the action in the memory store for immediate access
         self.store_memory("proposed_action", action)
 
         return action
@@ -696,6 +736,7 @@ class AIAgent(Agent):
     def store_tool_calls(self, tool_calls, state):
         """
         Enhanced method to store tool calls with reliable persistence.
+        Converts from 1-indexed (LLM) to 0-indexed (Python) for card positions.
 
         Args:
             tool_calls: The tool calls to store
@@ -714,6 +755,11 @@ class AIAgent(Agent):
         self.store_memory("raw_tool_calls", tool_calls)
         new_state["proposed_tool_calls"] = tool_calls
 
+        # Get hand size for validation if available
+        hand_size = 0
+        if self.current_game_state and hasattr(self.current_game_state, 'hands') and len(self.current_game_state.hands) > self.agent_id:
+            hand_size = len(self.current_game_state.hands[self.agent_id])
+
         # Create standardized actions from tool calls
         standardized_actions = []
 
@@ -730,9 +776,17 @@ class AIAgent(Agent):
 
             # Convert to standard format based on tool type
             if tool_name == "play_card_tool":
+                # Get the original 1-indexed card position
+                original_index = tool_args.get(
+                    "card_index", 1)  # Default to 1 if missing
+
+                # Validate and convert to 0-indexed
+                zero_indexed = self.validate_and_convert_index(
+                    original_index, hand_size)
+
                 std_action = {
                     "type": "play_card",
-                    "card_index": tool_args.get("card_index", 0)
+                    "card_index": zero_indexed
                 }
                 # Store specialized version for direct access
                 self.store_memory("play_card_action", std_action)
@@ -749,9 +803,17 @@ class AIAgent(Agent):
                 self.store_memory("give_clue_action", std_action)
 
             elif tool_name == "discard_tool":
+                # Get the original 1-indexed card position
+                original_index = tool_args.get(
+                    "card_index", 1)  # Default to 1 if missing
+
+                # Validate and convert to 0-indexed
+                zero_indexed = self.validate_and_convert_index(
+                    original_index, hand_size)
+
                 std_action = {
                     "type": "discard",
-                    "card_index": tool_args.get("card_index", 0)
+                    "card_index": zero_indexed
                 }
                 self.store_memory("discard_action", std_action)
 
@@ -795,10 +857,23 @@ class AIAgent(Agent):
         logger.info(
             f"Executing tool directly: {tool_name} with args {tool_args}")
 
+        # Get hand size for validation
+        hand_size = 0
+        if hasattr(game_state, 'hands') and len(game_state.hands) > self.agent_id:
+            hand_size = len(game_state.hands[self.agent_id])
+
         if tool_name == "play_card_tool":
+            # Get the original 1-indexed card position
+            original_index = tool_args.get(
+                "card_index", 1)  # Default to 1 if missing
+
+            # Validate and convert to 0-indexed
+            zero_indexed = self.validate_and_convert_index(
+                original_index, hand_size)
+
             return {
                 "type": "play_card",
-                "card_index": tool_args.get("card_index", 0)
+                "card_index": zero_indexed
             }
         elif tool_name == "give_clue_tool":
             return {
@@ -810,9 +885,17 @@ class AIAgent(Agent):
                 }
             }
         elif tool_name == "discard_tool":
+            # Get the original 1-indexed card position
+            original_index = tool_args.get(
+                "card_index", 1)  # Default to 1 if missing
+
+            # Validate and convert to 0-indexed
+            zero_indexed = self.validate_and_convert_index(
+                original_index, hand_size)
+
             return {
                 "type": "discard",
-                "card_index": tool_args.get("card_index", 0)
+                "card_index": zero_indexed
             }
         else:
             logger.warning(
@@ -829,12 +912,33 @@ class AIAgent(Agent):
 
         Returns:
             The action to take
+
+        Note:
+            This method handles the conversion between 1-indexed card positions (used by the LLM)
+            and 0-indexed positions (used by the Python implementation). The conversion happens
+            at the final execution stage, not during the thought or proposal phase.
         """
         logger.info(
             f"Agent {self.agent_id} taking turn with unified_approach={use_unified_approach}")
 
         # Store the current game state for use in subsequent methods
         self.current_game_state = game_state
+
+        # Log the agent's hand for debugging card indexing issues
+        if hasattr(game_state, 'hands') and len(game_state.hands) > self.agent_id:
+            hand = game_state.hands[self.agent_id]
+            hand_str = ", ".join(
+                [f"{i}: '{card}'" for i, card in enumerate(hand)])
+            logger.info(
+                f"Agent {self.agent_id}'s hand (0-indexed): [{hand_str}]")
+
+            # Also log knowledge if available
+            if hasattr(game_state, 'card_knowledge') and len(game_state.card_knowledge) > self.agent_id:
+                knowledge = game_state.card_knowledge[self.agent_id]
+                knowledge_str = ", ".join(
+                    [f"{i}: '{k}'" for i, k in enumerate(knowledge)])
+                logger.info(
+                    f"Agent {self.agent_id}'s knowledge (0-indexed): [{knowledge_str}]")
 
         if use_unified_approach:
             # Use the unified approach (single phase)
@@ -893,6 +997,23 @@ class AIAgent(Agent):
             game_history=game_history
         )
 
+        # Add instruction about 1-indexed card positions
+        prompt += """
+
+CRITICAL INDEXING INSTRUCTION:
+When referring to card positions, you MUST use 1-indexed positions where:
+- The first card (leftmost) is position 1
+- The second card is position 2
+- The third card is position 3
+- And so on...
+
+For example, if your hand has 5 cards and you want to play the second card from the left, 
+use card_index: 2, NOT card_index: 1.
+
+The system will convert your 1-indexed positions to 0-indexed positions when executing your action.
+DO NOT make this conversion yourself.
+"""
+
         # Create a human message with the prompt
         message = HumanMessage(content=prompt)
 
@@ -902,10 +1023,19 @@ class AIAgent(Agent):
 
             # Parse the response into an ActionProposal
             action_proposal = ActionProposal.parse_raw(response.content)
+            action = action_proposal.action.dict()
+
+            # Log the original 1-indexed action for clarity
+            if action.get("type") in ["play_card", "discard"] and "card_index" in action:
+                logger.info(
+                    f"LLM proposed {action.get('type')} with 1-indexed card_index: {action['card_index']}")
+
+            # DO NOT convert here - we'll convert at the final execution stage
+            # Keep the 1-indexed values as they are
 
             # Return the action and explanation
             return {
-                "action": action_proposal.action.dict(),
+                "action": action,
                 "explanation": action_proposal.explanation
             }
 
@@ -915,7 +1045,7 @@ class AIAgent(Agent):
             return {
                 "action": {
                     "type": "discard",
-                    "card_index": 0
+                    "card_index": 0  # 0-indexed since this is our internal fallback
                 },
                 "explanation": "Error occurred, falling back to default action"
             }
@@ -969,6 +1099,9 @@ class AIAgent(Agent):
         self.agent_memory.thoughts = thoughts
         self.store_memory("current_thoughts", thoughts)
 
+        # Log the current thoughts for debugging
+        logger.info(f"Current thoughts: {thoughts}")
+
         # Check if we have tool calls from the thought phase
         tool_calls = None
         messages = thought_result.get("messages", [])
@@ -997,10 +1130,24 @@ class AIAgent(Agent):
             game_history=[]
         )
 
-        # Extract the action from the proposal
+        # Extract the action from the proposal (will be in 1-indexed format)
         action = action_proposal.get("action", {})
 
-        # Store the action in agent memory using store_memory instead of direct assignment
+        # Log the proposed action
+        logger.info(f"Successfully proposed action: {action}")
+
+        # Get hand size for validation
+        hand_size = 0
+        if hasattr(game_state, 'hands') and len(game_state.hands) > self.agent_id:
+            hand_size = len(game_state.hands[self.agent_id])
+
+        # Validate and convert from 1-indexed to 0-indexed for card positions
+        if action and action.get("type") in ["play_card", "discard"] and "card_index" in action:
+            original_index = action["card_index"]
+            action["card_index"] = self.validate_and_convert_index(
+                original_index, hand_size)
+
+        # Store the converted action in memory
         self.store_memory("proposed_action", action)
 
         # Return the action, or fallback if none found
@@ -1012,3 +1159,73 @@ class AIAgent(Agent):
             fallback_action = self._fallback_action(game_state)
             self.store_memory("proposed_action", fallback_action)
             return fallback_action
+
+    def to_zero_indexed(self, one_indexed_value):
+        """
+        Convert a 1-indexed value to a 0-indexed value.
+
+        Args:
+            one_indexed_value: A value using 1-based indexing
+
+        Returns:
+            The equivalent 0-indexed value
+        """
+        try:
+            # Check if the value is a string or number that can be converted to int
+            if isinstance(one_indexed_value, (int, str)) and str(one_indexed_value).isdigit():
+                zero_indexed = int(one_indexed_value) - 1
+                # Ensure we don't return negative values
+                return max(0, zero_indexed)
+            return one_indexed_value  # Return unchanged if not convertible
+        except Exception as e:
+            logger.error(f"Error converting to zero-indexed: {e}")
+            return one_indexed_value  # Return unchanged on error
+
+    def to_one_indexed(self, zero_indexed_value):
+        """
+        Convert a 0-indexed value to a 1-indexed value.
+
+        Args:
+            zero_indexed_value: A value using 0-based indexing
+
+        Returns:
+            The equivalent 1-indexed value
+        """
+        try:
+            # Check if the value is a string or number that can be converted to int
+            if isinstance(zero_indexed_value, (int, str)) and str(zero_indexed_value).isdigit():
+                return int(zero_indexed_value) + 1
+            return zero_indexed_value  # Return unchanged if not convertible
+        except Exception as e:
+            logger.error(f"Error converting to one-indexed: {e}")
+            return zero_indexed_value  # Return unchanged on error
+
+    def validate_and_convert_index(self, original_index, hand_size=None):
+        """
+        Validate a 1-indexed card position and convert it to 0-indexed.
+
+        Args:
+            original_index: The 1-indexed card position from the LLM
+            hand_size: Optional hand size for validation
+
+        Returns:
+            The validated and converted 0-indexed card position
+        """
+        # Default to 1 if missing or invalid type
+        if not isinstance(original_index, int) or original_index < 1:
+            logger.warning(
+                f"Invalid 1-indexed card_index: {original_index}. Must be at least 1. Setting to 1.")
+            original_index = 1
+
+        # Validate against hand size if provided
+        if hand_size is not None and hand_size > 0 and original_index > hand_size:
+            logger.warning(
+                f"Invalid 1-indexed card_index: {original_index}. Exceeds hand size of {hand_size}. Setting to {hand_size}.")
+            original_index = hand_size
+
+        # Convert to 0-indexed
+        zero_indexed = self.to_zero_indexed(original_index)
+        logger.info(
+            f"Converting from 1-indexed {original_index} to 0-indexed {zero_indexed}")
+
+        return zero_indexed
