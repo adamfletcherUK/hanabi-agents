@@ -361,6 +361,10 @@ class AIAgent(Agent):
         """
         logger.info(f"Agent {self.agent_id} deciding on action")
 
+        # Update card knowledge first for better decision making
+        updated_knowledge = self.update_card_knowledge_from_history(game_state)
+        logger.info(f"Updated card knowledge: {updated_knowledge}")
+
         # First, check if we have a stored standardized action from the discussion phase
         # These should already be in 0-indexed format from store_tool_calls
         primary_action = self.get_memory_from_store("primary_action")
@@ -1175,10 +1179,16 @@ DO NOT make this conversion yourself.
             if isinstance(one_indexed_value, (int, str)) and str(one_indexed_value).isdigit():
                 zero_indexed = int(one_indexed_value) - 1
                 # Ensure we don't return negative values
-                return max(0, zero_indexed)
+                zero_indexed = max(0, zero_indexed)
+                logger.info(
+                    f"✓ INDEX CONVERSION: 1-indexed {one_indexed_value} -> 0-indexed {zero_indexed}")
+                return zero_indexed
+            logger.warning(
+                f"⚠️ Cannot convert value to zero-indexed: {one_indexed_value} (not a valid index)")
             return one_indexed_value  # Return unchanged if not convertible
         except Exception as e:
-            logger.error(f"Error converting to zero-indexed: {e}")
+            logger.error(
+                f"❌ Error converting to zero-indexed: {e}, input: {one_indexed_value}")
             return one_indexed_value  # Return unchanged on error
 
     def to_one_indexed(self, zero_indexed_value):
@@ -1194,10 +1204,16 @@ DO NOT make this conversion yourself.
         try:
             # Check if the value is a string or number that can be converted to int
             if isinstance(zero_indexed_value, (int, str)) and str(zero_indexed_value).isdigit():
-                return int(zero_indexed_value) + 1
+                one_indexed = int(zero_indexed_value) + 1
+                logger.info(
+                    f"✓ INDEX CONVERSION: 0-indexed {zero_indexed_value} -> 1-indexed {one_indexed}")
+                return one_indexed
+            logger.warning(
+                f"⚠️ Cannot convert value to one-indexed: {zero_indexed_value} (not a valid index)")
             return zero_indexed_value  # Return unchanged if not convertible
         except Exception as e:
-            logger.error(f"Error converting to one-indexed: {e}")
+            logger.error(
+                f"❌ Error converting to one-indexed: {e}, input: {zero_indexed_value}")
             return zero_indexed_value  # Return unchanged on error
 
     def validate_and_convert_index(self, original_index, hand_size=None):
@@ -1211,6 +1227,11 @@ DO NOT make this conversion yourself.
         Returns:
             The validated and converted 0-indexed card position
         """
+        logger.info(f"Validating and converting card index: {original_index}")
+
+        # Check if we have card knowledge we can use for validation
+        card_knowledge = self.get_memory_from_store("card_knowledge")
+
         # Default to 1 if missing or invalid type
         if not isinstance(original_index, int) or original_index < 1:
             logger.warning(
@@ -1218,14 +1239,159 @@ DO NOT make this conversion yourself.
             original_index = 1
 
         # Validate against hand size if provided
-        if hand_size is not None and hand_size > 0 and original_index > hand_size:
-            logger.warning(
-                f"Invalid 1-indexed card_index: {original_index}. Exceeds hand size of {hand_size}. Setting to {hand_size}.")
-            original_index = hand_size
+        if hand_size is not None and hand_size > 0:
+            logger.info(f"Hand size: {hand_size}")
+            if original_index > hand_size:
+                logger.warning(
+                    f"Invalid 1-indexed card_index: {original_index}. Exceeds hand size of {hand_size}. Setting to {hand_size}.")
+                original_index = hand_size
 
         # Convert to 0-indexed
         zero_indexed = self.to_zero_indexed(original_index)
         logger.info(
             f"Converting from 1-indexed {original_index} to 0-indexed {zero_indexed}")
 
+        # Log knowledge about the selected card if available
+        if card_knowledge and zero_indexed < len(card_knowledge):
+            knowledge = card_knowledge[zero_indexed]
+            known_info = []
+
+            if knowledge.get("color_clued"):
+                known_info.append(f"color: {knowledge['color_clued']}")
+
+            if knowledge.get("number_clued"):
+                known_info.append(f"number: {knowledge['number_clued']}")
+
+            if known_info:
+                logger.info(
+                    f"Selected card knowledge: {', '.join(known_info)}")
+            else:
+                logger.warning("Selected card has no known information")
+
+            # Log possible values
+            if knowledge.get("possible_colors"):
+                logger.info(
+                    f"Possible colors: {', '.join(knowledge['possible_colors'])}")
+            if knowledge.get("possible_numbers"):
+                logger.info(
+                    f"Possible numbers: {', '.join(map(str, knowledge['possible_numbers']))}")
+
         return zero_indexed
+
+    def update_card_knowledge_from_history(self, game_state):
+        """
+        Updates the agent's card knowledge based on clues and game history.
+        This helps the agent make better decisions by tracking more information
+        about its own cards.
+
+        Args:
+            game_state: Current state of the game
+
+        Returns:
+            Updated card knowledge dictionary
+        """
+        logger.info("Updating card knowledge from game history")
+
+        # Get current knowledge
+        card_knowledge = self.get_memory_from_store("card_knowledge") or []
+
+        # If we don't have card knowledge yet, initialize it from game state
+        if not card_knowledge and hasattr(game_state, 'hands') and self.agent_id in game_state.hands:
+            hand_size = len(game_state.hands[self.agent_id])
+            card_knowledge = [
+                {"possible_colors": [], "possible_numbers": []} for _ in range(hand_size)
+            ]
+
+        # Get game history
+        game_history = self.get_memory_from_store("game_history") or []
+
+        # Track current state of the firework piles to determine playability
+        firework_tops = {}
+        for color, pile in game_state.firework_piles.items():
+            top_number = 0
+            if pile and len(pile) > 0:
+                top_number = pile[-1].number
+            firework_tops[color.value] = top_number
+
+        # Analyze clues in game history
+        for event in game_history:
+            # Only process clue events targeted at this agent
+            if (event.get('action', {}).get('type') == 'give_clue' and
+                    event.get('action', {}).get('target_id') == self.agent_id):
+
+                clue = event.get('action', {}).get('clue', {})
+                clue_type = clue.get('type')
+                clue_value = clue.get('value')
+
+                if clue_type and clue_value:
+                    # Get positions of cards that matched the clue
+                    clued_positions = event.get(
+                        'result', {}).get('clued_positions', [])
+
+                    # Convert to 0-indexed if needed
+                    if all(pos > 0 for pos in clued_positions):
+                        clued_positions = [self.to_zero_indexed(
+                            pos) for pos in clued_positions]
+
+                    # Update the knowledge for each clued position
+                    for position in clued_positions:
+                        if position < len(card_knowledge):
+                            if clue_type == 'color':
+                                card_knowledge[position]['color_clued'] = clue_value
+                                # Now we know the color, so we can limit possible numbers
+                                # based on what's needed for fireworks
+                                needed_number = firework_tops.get(
+                                    clue_value, 0) + 1
+                                if 1 <= needed_number <= 5:
+                                    card_knowledge[position][
+                                        'playable_context'] = f"This {clue_value} card might be the next needed {clue_value} {needed_number}"
+                            elif clue_type == 'number':
+                                card_knowledge[position]['number_clued'] = int(
+                                    clue_value)
+
+                                # If it's a 5, it's valuable and shouldn't be discarded
+                                if int(clue_value) == 5:
+                                    card_knowledge[position]['valuable'] = True
+                                    card_knowledge[position]['discard_risk'] = "high"
+                                # If it's a 1 and no firework pile of this color has started, it's playable
+                                elif int(clue_value) == 1:
+                                    card_knowledge[position]['potentially_playable'] = True
+
+        # Update knowledge based on discard pile to determine what cards are no longer available
+        discard_pile = game_state.discard_pile if hasattr(
+            game_state, 'discard_pile') else []
+        discarded_cards = {}
+
+        # Count discarded cards
+        for card in discard_pile:
+            key = f"{card.color.value}_{card.number}"
+            discarded_cards[key] = discarded_cards.get(key, 0) + 1
+
+        # Update discard risk for each card
+        for i, knowledge in enumerate(card_knowledge):
+            color = knowledge.get('color_clued')
+            number = knowledge.get('number_clued')
+
+            if color and number:
+                # Check if all copies of this card are discarded
+                key = f"{color}_{number}"
+                discarded_count = discarded_cards.get(key, 0)
+
+                # Check card counts (1s: 3 copies, 2-4s: 2 copies, 5s: 1 copy)
+                total_copies = 3 if number == 1 else (
+                    2 if 2 <= number <= 4 else 1)
+                remaining = total_copies - discarded_count
+
+                if remaining == 1:
+                    knowledge['discard_risk'] = "high"
+                    knowledge['valuable'] = True
+                    knowledge['discard_context'] = f"Last remaining {color} {number}"
+                elif remaining == 0:
+                    knowledge['discard_risk'] = "none"
+                    knowledge['playable'] = False
+                    knowledge['discard_context'] = f"All {color} {number}s already discarded"
+
+        # Store the updated knowledge
+        self.store_memory("card_knowledge", card_knowledge)
+
+        return card_knowledge

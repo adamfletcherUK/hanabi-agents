@@ -1,5 +1,6 @@
 from typing import Dict, Any, List, Optional
 from ...game.state import GameState
+from .strategy_guidelines import get_strategy_guidelines
 
 
 def create_thought_generation_prompt(
@@ -26,10 +27,16 @@ def create_thought_generation_prompt(
     Returns:
         Prompt for generating thoughts
     """
+    # Get the strategy guidelines
+    strategy_guidelines = get_strategy_guidelines()
+
     prompt = f"""
 # Hanabi Strategic Thinking
 
 You are Player {agent_id} in a game of Hanabi. Based on the game state analysis, generate strategic thoughts about what to do next.
+
+## Strategy Guidelines
+{strategy_guidelines}
 
 ## Current Game State Summary
 
@@ -57,7 +64,8 @@ You are Player {agent_id} in a game of Hanabi. Based on the game state analysis,
         if player_id != agent_id:
             prompt += f"\nPlayer {player_id}'s hand:\n"
             for i, card in enumerate(hand):
-                prompt += f"- Card {i}: {card.color.value} {card.number}\n"
+                # Note: Using 1-indexing for display
+                prompt += f"- Card {i+1}: {card.color.value} {card.number}\n"
 
     # Add your hand (with hidden information)
     prompt += f"\nYour hand (Player {agent_id}):\n"
@@ -77,7 +85,16 @@ You are Player {agent_id} in a game of Hanabi. Based on the game state analysis,
         possible_numbers = ", ".join(map(
             str, knowledge["possible_numbers"])) if knowledge.get("possible_numbers") else "All numbers possible"
 
-        prompt += f"- Card {i}: Color: {color_info} (Possible: {possible_colors}), Number: {number_info} (Possible: {possible_numbers})\n"
+        # Note: Using 1-indexing for display
+        prompt += f"- Card {i+1}: Color: {color_info} (Possible: {possible_colors}), Number: {number_info} (Possible: {possible_numbers})\n"
+
+    # Add information about recent failed actions if available
+    if recent_errors and len(recent_errors) > 0:
+        prompt += "\n## Recent Action Errors\n"
+        for error in recent_errors:
+            action_type = error.get("action", {}).get("type", "unknown")
+            error_msg = error.get("error", "unknown error")
+            prompt += f"- Failed {action_type}: {error_msg}\n"
 
     prompt += "\n## Your Previous Analysis\n"
 
@@ -86,35 +103,59 @@ You are Player {agent_id} in a game of Hanabi. Based on the game state analysis,
     else:
         prompt += "No previous analysis available."
 
+    prompt += f"""
+## Game History (Last 3 Turns)
+"""
+    # Add recent game history
+    recent_history = game_history[-3:] if game_history and len(
+        game_history) > 0 else []
+    for i, event in enumerate(recent_history):
+        player = event.get("player", "?")
+        action_type = event.get("action", {}).get("type", "unknown")
+        if action_type == "play_card":
+            card_index = event.get("action", {}).get("card_index", "?")
+            card_info = event.get("result", {}).get("card", "unknown card")
+            success = event.get("result", {}).get("success", False)
+            status = "succeeded" if success else "failed"
+            # Note: Using 1-indexing for display
+            prompt += f"- Turn {event.get('turn', '?')}: Player {player} played card at position {card_index+1} ({card_info}) - {status}\n"
+        elif action_type == "give_clue":
+            target = event.get("action", {}).get("target_id", "?")
+            clue_type = event.get("action", {}).get(
+                "clue", {}).get("type", "?")
+            clue_value = event.get("action", {}).get(
+                "clue", {}).get("value", "?")
+            prompt += f"- Turn {event.get('turn', '?')}: Player {player} gave {clue_type} clue '{clue_value}' to Player {target}\n"
+        elif action_type == "discard":
+            card_index = event.get("action", {}).get("card_index", "?")
+            card_info = event.get("result", {}).get("card", "unknown card")
+            # Note: Using 1-indexing for display
+            prompt += f"- Turn {event.get('turn', '?')}: Player {player} discarded card at position {card_index+1} ({card_info})\n"
+
     prompt += """
 ## Thought Generation Task
 
 Generate a list of strategic thoughts about the current game state. Consider:
 
 1. What do you know about your own cards based on clues and game context?
-2. What is the most valuable action you can take right now?
+2. What is the most valuable action you can take right now based on the strategy guidelines?
 3. What information do your teammates need?
-4. What risks are worth taking in the current state?
-5. How can you best use the available clue tokens?
+4. Is it safer to play a card, give a clue, or discard in the current situation?
+5. If playing a card, which position (1-5) is safest and most beneficial based on your knowledge?
+6. If discarding, which position (1-5) is least likely to hurt the team?
+7. If giving a clue, what specific information will be most valuable to your teammates?
 
-IMPORTANT: Format your response EXACTLY as a numbered list of thoughts. Each thought must be on a new line and start with a number followed by a period. For example:
+IMPORTANT: 
+- Format your response EXACTLY as a numbered list of thoughts. Each thought must be on a new line and start with a number followed by a period.
+- Refer to card positions using 1-indexed positions (first card = 1, second card = 2, etc.)
+- Apply the strategy guidelines above to make optimal decisions.
+- Be explicit about why you believe certain cards are playable or safe to discard.
 
-1. I know my first card is red based on the clue from Player 2.
-2. Playing my first card seems safe since it's likely a red 1.
-3. Player 2 might need information about their blue cards.
-4. We should prioritize playing cards that advance the fireworks.
-5. I should avoid discarding cards that might be needed later.
-
-DO NOT use any other format. DO NOT include any tool calls or function calls in this response.
-Be specific and strategic in your thinking.
+Example format:
+1. I know my first card (position 1) is a red 2 based on previous clues.
+2. The red 1 is already played, so my red 2 is immediately playable.
+3. Player 2 has a blue 1 in position 3 that they don't know about.
+4. I should play my red 2 (position 1) to advance the red firework pile.
 """
-
-    # Add error information if available
-    if recent_errors and len(recent_errors) > 0:
-        prompt += "\n## Recent Errors to Consider\n"
-        for error in recent_errors:
-            action_type = error.get("action_type", "unknown")
-            guidance = error.get("guidance", "No guidance available.")
-            prompt += f"- Error with {action_type} action: {guidance}\n"
 
     return prompt

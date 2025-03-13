@@ -7,9 +7,11 @@ from ...game.state import GameState
 class PlayCardInput(BaseModel):
     """Schema for playing a card from the agent's hand."""
     card_index: int = Field(
-        description="Index of the card to play (0-indexed)",
-        ge=0,  # greater than or equal to 0
-        le=4   # less than or equal to 4
+        description="The position of the card to play (1-indexed: first card = 1, second card = 2, etc.)",
+        # greater than or equal to 0 (validation will accept 0 though we expect 1-indexed input)
+        ge=0,
+        # less than or equal to 4 (validation will accept 0-4 though we expect 1-5)
+        le=4
     )
 
 
@@ -30,7 +32,7 @@ def play_card_tool(card_index: int) -> Dict[str, Any]:
     Play a card from the agent's hand.
 
     Args:
-        card_index: Index of the card to play (0-indexed, must be between 0 and 4)
+        card_index: Position of the card to play (1-indexed: first card = 1, second card = 2, etc.)
 
     Returns:
         Dictionary with the result of the action, including:
@@ -52,7 +54,7 @@ def _play_card_impl(agent_id: int, card_index: int, game_state: GameState) -> Di
 
     Args:
         agent_id: ID of the agent playing the card
-        card_index: Index of the card to play (0-indexed)
+        card_index: Index of the card to play (0-indexed, after conversion from 1-indexed input)
         game_state: Current state of the game
 
     Returns:

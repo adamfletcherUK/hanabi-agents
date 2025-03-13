@@ -6,9 +6,11 @@ class PlayCardAction(BaseModel):
     """Schema for playing a card action."""
     type: Literal["play_card"] = Field(description="Type of action")
     card_index: int = Field(
-        description="Index of the card to play (0-indexed)",
-        ge=0,  # greater than or equal to 0
-        le=4   # less than or equal to 4
+        description="Index of the card to play (1-indexed: first card = 1, second card = 2, etc.)",
+        # greater than or equal to 0 (validation will accept 0 though we expect 1-indexed input)
+        ge=0,
+        # less than or equal to 4 (validation will accept 0-4 though we expect 1-5)
+        le=4
     )
 
 
@@ -32,9 +34,11 @@ class DiscardAction(BaseModel):
     """Schema for discarding a card action."""
     type: Literal["discard"] = Field(description="Type of action")
     card_index: int = Field(
-        description="Index of the card to discard (0-indexed)",
-        ge=0,  # greater than or equal to 0
-        le=4   # less than or equal to 4
+        description="Index of the card to discard (1-indexed: first card = 1, second card = 2, etc.)",
+        # greater than or equal to 0 (validation will accept 0 though we expect 1-indexed input)
+        ge=0,
+        # less than or equal to 4 (validation will accept 0-4 though we expect 1-5)
+        le=4
     )
 
 

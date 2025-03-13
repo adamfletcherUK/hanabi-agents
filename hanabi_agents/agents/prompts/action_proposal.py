@@ -46,9 +46,9 @@ You must return a JSON object that matches this schema exactly:
 {schema_json}
 
 The action must be one of:
-- play_card: Play a card from your hand (card_index: 0-4)
+- play_card: Play a card from your hand (card_index: 1-5, where 1 is your first card, 2 is your second card, etc.)
 - give_clue: Give a clue to another player (target_id: player ID, clue: {{type: "color"|"number", value: string}})
-- discard: Discard a card from your hand (card_index: 0-4)
+- discard: Discard a card from your hand (card_index: 1-5, where 1 is your first card, 2 is your second card, etc.)
 
 Important rules:
 1. The response must be a valid JSON object
@@ -56,5 +56,6 @@ Important rules:
 3. The explanation should clearly justify your choice
 4. Do not add any fields not in the schema
 5. Do not modify the schema structure
+6. When referring to card positions, always use 1-indexed positions (first card = 1, second card = 2, etc.)
 
 Provide your response as a valid JSON object that matches the schema exactly."""
