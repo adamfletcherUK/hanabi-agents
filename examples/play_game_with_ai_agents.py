@@ -123,9 +123,13 @@ def log_agent_reasoning(agent, turn_count, print_to_console=True):
             for i, thought in enumerate(thoughts):
                 logger.info(f"Thought {i+1}: {thought}")
 
+            # Check if reasoning has already been logged for this turn
+            already_logged = hasattr(
+                agent, '_reasoning_logged_for_turn') and agent._reasoning_logged_for_turn == turn_count
+
             # Print to console if explicitly requested AND not already shown
             # This is typically only used for specific debugging scenarios
-            if print_to_console and (not hasattr(agent, '_reasoning_logged_for_turn') or agent._reasoning_logged_for_turn != turn_count):
+            if print_to_console and not already_logged:
                 # Use a different format for console to avoid duplication
                 console_logger.info(
                     f"\n🧠 REASONING CHAIN FOR AGENT {agent.agent_id} (Turn {turn_count}):")
@@ -383,11 +387,19 @@ def main():
                             for j, thought in enumerate(thoughts):
                                 logger.debug(f"  Thought {j+1}: {thought}")
 
-                            # Only display thoughts to console if they haven't been shown already
-                            if not hasattr(active_agent, '_thoughts_displayed_for_turn') or active_agent._thoughts_displayed_for_turn != turn_count + 1:
-                                # Instead of displaying immediate thoughts here, store them for a single, consistent display later
-                                active_agent.store_memory(
-                                    "extracted_thoughts", thoughts)
+                            # Store thoughts in agent memory using the proper method
+                            active_agent.store_memory(
+                                "extracted_thoughts", thoughts)
+
+                            # Display reasoning chain immediately after extraction
+                            console_logger.info("\n🧠 REASONING CHAIN FOR AGENT {0} (Turn {1}):".format(
+                                active_agent.agent_id, turn_count + 1))
+                            for j, thought in enumerate(thoughts):
+                                console_logger.info(
+                                    f"  Thought {j+1}: {thought}")
+
+                            # Mark that we've displayed reasoning for this turn
+                            active_agent._reasoning_logged_for_turn = turn_count + 1
                         else:
                             logger.debug(
                                 f"No thoughts could be extracted from the LLM output for agent {active_agent.agent_id}")
@@ -437,24 +449,27 @@ def main():
         logger.info("Starting action phase")
         console_logger.info("\n--- 🎬 Action Phase ---")
 
-        # Display the agent's thoughts once and only once, right before the action
-        if not hasattr(current_agent, '_thoughts_displayed_for_turn') or current_agent._thoughts_displayed_for_turn != turn_count + 1:
-            # Try to get thoughts from memory
-            thoughts = current_agent.get_memory_from_store(
-                "current_thoughts", [])
+        # Get the current thoughts from the agent's memory
+        current_thoughts = current_agent.get_memory_from_store(
+            "current_thoughts", [])
+        if current_thoughts:
+            # Get extracted thoughts from earlier
             extracted_thoughts = current_agent.get_memory_from_store(
                 "extracted_thoughts", [])
 
             # Use extracted_thoughts if available, otherwise use current_thoughts
-            display_thoughts = extracted_thoughts if extracted_thoughts else thoughts
+            display_thoughts = extracted_thoughts if extracted_thoughts else current_thoughts
 
-            if display_thoughts:
+            # Only display thoughts if they haven't been shown already
+            already_displayed = hasattr(
+                current_agent, '_reasoning_logged_for_turn') and current_agent._reasoning_logged_for_turn == turn_count + 1
+            if not already_displayed:
                 console_logger.info(
                     f"\n💭 AGENT {current_agent.agent_id}'s THOUGHTS:")
                 for i, thought in enumerate(display_thoughts):
                     console_logger.info(f"  • {thought}")
                 # Mark that we've displayed thoughts for this turn
-                current_agent._thoughts_displayed_for_turn = turn_count + 1
+                current_agent._reasoning_logged_for_turn = turn_count + 1
 
         # No discussion summary needed - pass empty string
         action = current_agent.decide_action(game_state, "")
