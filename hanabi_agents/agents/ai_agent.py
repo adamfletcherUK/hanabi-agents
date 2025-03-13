@@ -94,16 +94,83 @@ class AIAgent(Agent):
 
     def _initialize_model(self, use_json_format: bool = False) -> ChatOpenAI:
         """
-        Initialize the model with optional structured output support.
+        Initialize the model with improved structured output support.
 
         Args:
             use_json_format: Whether to enable JSON response format
         """
         model_kwargs = {}
+
         if use_json_format:
+            # Ensure consistent structured output format
             model_kwargs["response_format"] = {"type": "json_object"}
             # We're using structured output instead of function calling
             model_kwargs["functions"] = None
+        else:
+            # For the thought model, define consistent tool schemas
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "play_card_tool",
+                        "description": "Play a card from your hand",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "card_index": {
+                                    "type": "integer",
+                                    "description": "The index of the card to play (0-based)"
+                                }
+                            },
+                            "required": ["card_index"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "give_clue_tool",
+                        "description": "Give a clue to another player",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "target_id": {
+                                    "type": "integer",
+                                    "description": "The ID of the player to give the clue to"
+                                },
+                                "clue_type": {
+                                    "type": "string",
+                                    "enum": ["color", "number"],
+                                    "description": "The type of clue to give (color or number)"
+                                },
+                                "clue_value": {
+                                    "type": "string",
+                                    "description": "The value of the clue (a color or a number as a string)"
+                                }
+                            },
+                            "required": ["target_id", "clue_type", "clue_value"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "discard_tool",
+                        "description": "Discard a card from your hand",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "card_index": {
+                                    "type": "integer",
+                                    "description": "The index of the card to discard (0-based)"
+                                }
+                            },
+                            "required": ["card_index"]
+                        }
+                    }
+                }
+            ]
+            model_kwargs["tools"] = tools
 
         return ChatOpenAI(
             model=self.model_name,
@@ -112,6 +179,49 @@ class AIAgent(Agent):
             temperature=self.temperature,
             model_kwargs=model_kwargs
         )
+
+    def verify_tool_call(self, tool_call):
+        """
+        Verify and standardize a tool call to ensure it's properly formatted.
+
+        Args:
+            tool_call: The tool call to verify
+
+        Returns:
+            The verified and standardized tool call, or None if invalid
+        """
+        try:
+            import json
+
+            # Basic validation
+            if not isinstance(tool_call, dict):
+                logger.warning(f"Tool call is not a dictionary: {tool_call}")
+                return None
+
+            if "name" not in tool_call:
+                logger.warning(f"Tool call missing 'name': {tool_call}")
+                return None
+
+            if "args" not in tool_call or not isinstance(tool_call["args"], dict):
+                logger.warning(
+                    f"Tool call missing or invalid 'args': {tool_call}")
+                # Try to convert non-dict args to dict
+                if isinstance(tool_call.get("args"), str):
+                    try:
+                        tool_call["args"] = json.loads(tool_call["args"])
+                    except:
+                        tool_call["args"] = {}
+                else:
+                    tool_call["args"] = {}
+
+            # Normalize tool name
+            tool_call["name"] = _normalize_tool_name(tool_call["name"])
+
+            return tool_call
+
+        except Exception as e:
+            logger.error(f"Error verifying tool call: {e}")
+            return None
 
     def participate_in_discussion(self, game_state: GameState, discussion_history: List[Dict[str, Any]]) -> str:
         """
@@ -176,17 +286,29 @@ class AIAgent(Agent):
         for message in reversed(messages):
             if hasattr(message, "tool_calls") and message.tool_calls:
                 tool_calls = message.tool_calls
+                logger.info(f"Found tool calls in message: {tool_calls}")
                 break
 
-        # Store the tool calls for later use in decide_action
+        # Store the tool calls for later use with better error handling
         if tool_calls:
-            logger.info(f"Storing tool calls in memory: {tool_calls}")
-            self.store_memory("tool_calls", tool_calls)
-            # Also store in the agent's memory for persistence
-            self.agent_memory.store_memory("proposed_tool_calls", tool_calls)
+            try:
+                # Standardize and store tool calls
+                updated_state = self.store_tool_calls(tool_calls, {})
+                # Extract any standardized actions
+                standardized_actions = updated_state.get(
+                    "standardized_actions", [])
+                if standardized_actions:
+                    logger.info(
+                        f"Successfully stored standardized actions: {standardized_actions}")
+                else:
+                    logger.warning(
+                        "No standardized actions extracted from tool calls")
+            except Exception as e:
+                logger.error(f"Error processing tool calls: {e}")
+                # Continue with fallback behavior
         else:
             logger.warning(
-                f"No tool calls found in messages after reasoning graph execution")
+                "No tool calls found in messages after reasoning graph execution")
 
         # Format the thoughts and tool calls into a contribution
         contribution = "## Game State Analysis\n\n"
@@ -238,6 +360,33 @@ class AIAgent(Agent):
             A dictionary containing the action to take
         """
         logger.info(f"Agent {self.agent_id} deciding on action")
+
+        # First, check if we have a stored standardized action from the discussion phase
+        primary_action = self.get_memory_from_store("primary_action")
+        if primary_action:
+            logger.info(
+                f"Using stored primary action from discussion: {primary_action}")
+            return primary_action
+
+        # If no stored action, check for tool-specific actions
+        play_card_action = self.get_memory_from_store("play_card_action")
+        if play_card_action:
+            logger.info(f"Using stored play_card_action: {play_card_action}")
+            return play_card_action
+
+        give_clue_action = self.get_memory_from_store("give_clue_action")
+        if give_clue_action:
+            logger.info(f"Using stored give_clue_action: {give_clue_action}")
+            return give_clue_action
+
+        discard_action = self.get_memory_from_store("discard_action")
+        if discard_action:
+            logger.info(f"Using stored discard_action: {discard_action}")
+            return discard_action
+
+        # If no stored actions found, continue with existing logic to generate a new action
+        logger.info(
+            "No stored actions found, generating new action through reasoning graph")
 
         # Store the current game state for tool access
         self.current_game_state = game_state
@@ -546,83 +695,154 @@ class AIAgent(Agent):
 
     def store_tool_calls(self, tool_calls, state):
         """
-        Store tool calls in the agent's memory for use between phases.
+        Enhanced method to store tool calls with reliable persistence.
 
         Args:
             tool_calls: The tool calls to store
             state: The current state
 
         Returns:
-            The updated state with stored tool calls
+            The updated state with standardized tool calls
         """
         if not tool_calls:
             return state
 
         # Make a copy of the state to avoid modifying the original
-        new_state = state.copy()
+        new_state = state.copy() if state else {}
 
-        # Store the tool calls
+        # Store the raw tool calls for debugging purposes
+        self.store_memory("raw_tool_calls", tool_calls)
         new_state["proposed_tool_calls"] = tool_calls
 
-        # Log the stored tool calls
-        logger.info(f"Stored tool calls in state: {tool_calls}")
+        # Create standardized actions from tool calls
+        standardized_actions = []
 
+        for tool_call in tool_calls:
+            # Verify and validate the tool call
+            validated_tool = self.verify_tool_call(tool_call)
+            if not validated_tool:
+                logger.warning(f"Skipping invalid tool call: {tool_call}")
+                continue
+
+            # Extract the verified tool information
+            tool_name = validated_tool["name"]
+            tool_args = validated_tool["args"]
+
+            # Convert to standard format based on tool type
+            if tool_name == "play_card_tool":
+                std_action = {
+                    "type": "play_card",
+                    "card_index": tool_args.get("card_index", 0)
+                }
+                # Store specialized version for direct access
+                self.store_memory("play_card_action", std_action)
+
+            elif tool_name == "give_clue_tool":
+                std_action = {
+                    "type": "give_clue",
+                    "target_id": tool_args.get("target_id", 0),
+                    "clue": {
+                        "type": tool_args.get("clue_type", "color"),
+                        "value": tool_args.get("clue_value", "red")
+                    }
+                }
+                self.store_memory("give_clue_action", std_action)
+
+            elif tool_name == "discard_tool":
+                std_action = {
+                    "type": "discard",
+                    "card_index": tool_args.get("card_index", 0)
+                }
+                self.store_memory("discard_action", std_action)
+
+            else:
+                logger.warning(f"Unknown tool name: {tool_name}")
+                continue
+
+            standardized_actions.append(std_action)
+
+        # Store all standardized actions
+        if standardized_actions:
+            self.store_memory("standardized_actions", standardized_actions)
+            new_state["standardized_actions"] = standardized_actions
+            # Store the first action as the primary one
+            self.store_memory("primary_action", standardized_actions[0])
+            new_state["primary_action"] = standardized_actions[0]
+
+        logger.info(f"Standardized actions: {standardized_actions}")
         return new_state
 
-    def take_turn(self, game_state):
+    def execute_tool_directly(self, tool_call, game_state):
         """
-        Take a turn in the game.
+        Execute a tool call directly and return the result without going through the reasoning graph.
+        Useful for direct tool execution from the thought phase.
+
+        Args:
+            tool_call: The tool call to execute
+            game_state: The current game state
+
+        Returns:
+            A dictionary containing the action to take
+        """
+        validated_tool = self.verify_tool_call(tool_call)
+        if not validated_tool:
+            logger.warning("Invalid tool call, using fallback action")
+            return self._fallback_action(game_state)
+
+        tool_name = validated_tool["name"]
+        tool_args = validated_tool["args"]
+
+        logger.info(
+            f"Executing tool directly: {tool_name} with args {tool_args}")
+
+        if tool_name == "play_card_tool":
+            return {
+                "type": "play_card",
+                "card_index": tool_args.get("card_index", 0)
+            }
+        elif tool_name == "give_clue_tool":
+            return {
+                "type": "give_clue",
+                "target_id": tool_args.get("target_id", 0),
+                "clue": {
+                    "type": tool_args.get("clue_type", "color"),
+                    "value": tool_args.get("clue_value", "red")
+                }
+            }
+        elif tool_name == "discard_tool":
+            return {
+                "type": "discard",
+                "card_index": tool_args.get("card_index", 0)
+            }
+        else:
+            logger.warning(
+                f"Unknown tool name: {tool_name}, using fallback action")
+            return self._fallback_action(game_state)
+
+    def take_turn(self, game_state, use_unified_approach=False):
+        """
+        Take a turn in the game, using either a two-phase or unified approach.
 
         Args:
             game_state: The current state of the game
+            use_unified_approach: If True, use the unified think_and_act method
 
         Returns:
             The action to take
         """
-        logger.info(f"Agent {self.player_id} taking turn")
+        logger.info(
+            f"Agent {self.agent_id} taking turn with unified_approach={use_unified_approach}")
 
-        # Store the current game state for use in the reasoning graph
+        # Store the current game state for use in subsequent methods
         self.current_game_state = game_state
 
-        # Initialize the reasoning graph
-        graph = setup_reasoning_graph(self)
-
-        # Initialize the state
-        state = {
-            "game_state": game_state,
-            "player_id": self.player_id,
-            "memory": self.memory,
-            "model": self.model
-        }
-
-        # Execute the reasoning graph
-        try:
-            logger.info("Executing reasoning graph")
-            final_state = graph.invoke(state)
-
-            # Check if we have an action in the final state
-            if "action" in final_state:
-                action = final_state["action"]
-                logger.info(f"Action from reasoning graph: {action}")
-                return action
-
-            # If no action in final state, check for proposed tool calls
-            elif "proposed_tool_calls" in final_state and final_state["proposed_tool_calls"]:
-                # Use execute_action to convert tool calls to action
-                action_state = execute_action(final_state)
-                if "action" in action_state:
-                    logger.info(
-                        f"Action from execute_action: {action_state['action']}")
-                    return action_state["action"]
-
-            # If we still don't have an action, use a fallback
-            logger.warning(
-                "No action or tool calls found in final state, using fallback")
-            return self._fallback_action(game_state)
-
-        except Exception as e:
-            logger.error(f"Error executing reasoning graph: {e}")
-            return self._fallback_action(game_state)
+        if use_unified_approach:
+            # Use the unified approach (single phase)
+            return self.think_and_act(game_state)
+        else:
+            # Use the original two-phase approach
+            discussion = self.participate_in_discussion(game_state, [])
+            return self.decide_action(game_state, discussion)
 
     def _fallback_action(self, game_state):
         """
@@ -699,3 +919,96 @@ class AIAgent(Agent):
                 },
                 "explanation": "Error occurred, falling back to default action"
             }
+
+    def think_and_act(self, game_state: GameState) -> Dict[str, Any]:
+        """
+        Generate thoughts about the game state and immediately execute an action.
+
+        Args:
+            game_state: Current state of the game (filtered for this agent)
+
+        Returns:
+            A dictionary containing the action to take
+        """
+        logger.info(
+            f"Agent {self.agent_id} thinking and acting in a unified flow")
+
+        # Store the current game state for tool access
+        self.current_game_state = game_state
+
+        # Create initial state for thinking
+        state = create_initial_state(
+            game_state=game_state,
+            agent_id=self.agent_id,
+            discussion_history=[]  # Empty or retrieve from memory
+        )
+
+        # Explicitly set agent_id in the state
+        state["agent_id"] = self.agent_id
+
+        # Create unique identifiers for this conversation
+        conversation_id = f"agent_{self.agent_id}_think_act_{game_state.turn_count}"
+        thread_id = f"thread_{self.agent_id}_{game_state.turn_count}_{datetime.datetime.now().timestamp()}"
+
+        # Run reasoning graph for thought generation
+        thought_result = self.reasoning_graph.invoke(
+            state,
+            config={
+                "agent_id": self.agent_id,
+                "agent_instance": self,
+                "model": self.thought_model,
+                "configurable": {
+                    "conversation_id": conversation_id,
+                    "thread_id": thread_id
+                }
+            }
+        )
+
+        # Extract and store thoughts
+        thoughts = thought_result.get("current_thoughts", [])
+        self.agent_memory.thoughts = thoughts
+        self.store_memory("current_thoughts", thoughts)
+
+        # Check if we have tool calls from the thought phase
+        tool_calls = None
+        messages = thought_result.get("messages", [])
+        for message in reversed(messages):
+            if hasattr(message, "tool_calls") and message.tool_calls:
+                tool_calls = message.tool_calls
+                logger.info(f"Found tool calls in thought phase: {tool_calls}")
+                break
+
+        # If we have tool calls, execute the first one directly
+        if tool_calls and len(tool_calls) > 0:
+            logger.info("Executing tool call directly from thought phase")
+            action = self.execute_tool_directly(tool_calls[0], game_state)
+            # Store the action in agent memory using store_memory
+            self.store_memory("proposed_action", action)
+            return action
+
+        # If no tool calls, use propose_action to get a structured action
+        logger.info(
+            "No tool calls from thought phase, using structured action proposal")
+        action_proposal = self.propose_action(
+            game_state=game_state.dict() if hasattr(game_state, "dict") else game_state,
+            card_knowledge=getattr(game_state, "card_knowledge", {}),
+            current_thoughts=thoughts,
+            discussion_history=[],
+            game_history=[]
+        )
+
+        # Extract the action from the proposal
+        action = action_proposal.get("action", {})
+
+        # Store the action in agent memory using store_memory instead of direct assignment
+        self.store_memory("proposed_action", action)
+
+        # Return the action, or fallback if none found
+        if action:
+            logger.info(f"Returning action from proposal: {action}")
+            return action
+        else:
+            logger.warning("No action from proposal, using fallback")
+            fallback_action = self._fallback_action(game_state)
+            self.store_memory("proposed_action", fallback_action)
+            return fallback_action

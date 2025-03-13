@@ -297,6 +297,10 @@ def main():
     game_over = False
     turn_count = 0
 
+    # Whether to use the unified approach for taking turns
+    # Set to True to use think_and_act, False for two-phase approach
+    use_unified_approach = True
+
     while not game_over and turn_count < max_turns:
         # Get the current game state
         game_state = engine.get_game_state()
@@ -331,168 +335,177 @@ def main():
         # Log detailed game state to console and file
         game_logger.log_game_state(engine, print_to_console=True)
 
-        # Modified: Only the active player analyzes the game state and suggests an action
-        logger.info("Starting active player analysis phase")
-        console_logger.info("\n--- 🧠 ACTIVE PLAYER ANALYSIS PHASE ---")
+        if use_unified_approach:
+            # Use the unified approach (single step)
+            logger.info("Using unified think-and-act approach")
+            console_logger.info(
+                "\n--- 🧠 UNIFIED THINKING AND ACTING PHASE ---")
 
-        # Get the active player's reasoning
-        active_player_id = game_state.current_player
-        active_agent = next(
-            agent for agent in agents if agent.agent_id == active_player_id)
+            # Take the turn using the unified approach
+            action = current_agent.take_turn(
+                game_state, use_unified_approach=True)
 
-        console_logger.info(
-            f"\n👤 PLAYER {active_player_id} (ACTIVE PLAYER) REASONING:")
-
-        # Empty discussion contributions - only the active player will contribute
-        discussion_contributions = []
-
-        # Get the active player's contribution and display raw LLM outputs
-        contribution = active_agent.participate_in_discussion(
-            game_state, discussion_contributions)
-
-        # Display the raw messages from the agent's memory - but only to the log file
-        messages = active_agent.get_memory_from_store("messages", [])
-        if messages:
-            for i, msg in enumerate(messages):
-                # Only log LLM responses (odd indices) to the file
-                if hasattr(msg, 'content') and i % 2 == 1:
-                    content = msg.content
-                    # Log to file but not console
-                    logger.debug(f"LLM OUTPUT (STEP {i//2 + 1}):")
-                    logger.debug(content)
-
-                    # If this is the thought generation step (step 2)
-                    if i == 3:  # Third response (index 3) is thought generation
-                        # Extract and log thoughts
-                        thoughts = []
-                        for line in content.strip().split("\n"):
-                            line = line.strip()
-                            if line and (line[0].isdigit() or line[0] in ["•", "-", "*"]):
-                                # Remove the number or bullet point
-                                thought = line
-                                if line[0].isdigit():
-                                    parts = line.split(".", 1)
-                                    if len(parts) > 1:
-                                        thought = parts[1].strip()
-                                else:
-                                    thought = line[1:].strip()
-
-                                if thought:
-                                    thoughts.append(thought)
-
-                        # Log the extracted thoughts to file only (debug level)
-                        if thoughts:
-                            logger.debug(
-                                f"Extracted thoughts for agent {active_agent.agent_id} (Turn {turn_count + 1}):")
-                            for j, thought in enumerate(thoughts):
-                                logger.debug(f"  Thought {j+1}: {thought}")
-
-                            # Store thoughts in agent memory using the proper method
-                            active_agent.store_memory(
-                                "extracted_thoughts", thoughts)
-
-                            # Display reasoning chain immediately after extraction
-                            console_logger.info("\n🧠 REASONING CHAIN FOR AGENT {0} (Turn {1}):".format(
-                                active_agent.agent_id, turn_count + 1))
-                            for j, thought in enumerate(thoughts):
-                                console_logger.info(
-                                    f"  Thought {j+1}: {thought}")
-
-                            # Mark that we've displayed reasoning for this turn
-                            active_agent._reasoning_logged_for_turn = turn_count + 1
-                        else:
-                            logger.debug(
-                                f"No thoughts could be extracted from the LLM output for agent {active_agent.agent_id}")
-                            console_logger.info(
-                                "\n⚠️ No thoughts could be extracted from the LLM output")
-
-                    # ADDED: Display the raw LLM output for the action proposal step
-                    elif i == 5:  # Fifth response (index 5) is action proposal
-                        console_logger.info("\n🔍 ACTION REASONING:")
-                        # Extract and display a condensed version of the action reasoning
-                        action_lines = []
-                        for line in content.strip().split("\n"):
-                            line = line.strip()
-                            if line and "I will" in line:
-                                action_lines.append(line)
-                            elif line and "because" in line.lower() and len(line) < 200:
-                                action_lines.append(line)
-
-                        if action_lines:
-                            for line in action_lines:
-                                console_logger.info(f"  • {line}")
-                        else:
-                            # If no specific action lines found, show the first few lines
-                            content_lines = content.strip().split("\n")
-                            # Only show first 2 lines
-                            for line in content_lines[:2]:
-                                if line.strip():
-                                    console_logger.info(f"  • {line.strip()}")
-                        # No need for separator line
-
-                # Also log input prompts to file only
-                elif hasattr(msg, 'content') and i % 2 == 0:
-                    content = msg.content
-                    # Log to file but not console
-                    logger.debug(f"INPUT PROMPT (STEP {i//2 + 1}):")
-                    logger.debug(content)
-
-        # Add the contribution to the discussion history
-        discussion_contributions.append({
-            "player_id": active_player_id,
-            "content": contribution,
-            "is_active_player": True
-        })
-
-        # Modified: Skip other players' contributions and discussion summary
-        # Directly decide on an action based on the active player's analysis
-        logger.info("Starting action phase")
-        console_logger.info("\n--- 🎬 Action Phase ---")
-
-        # Get the current thoughts from the agent's memory
-        current_thoughts = current_agent.get_memory_from_store(
-            "current_thoughts", [])
-        if current_thoughts:
-            # Get extracted thoughts from earlier
-            extracted_thoughts = current_agent.get_memory_from_store(
-                "extracted_thoughts", [])
-
-            # Use extracted_thoughts if available, otherwise use current_thoughts
-            display_thoughts = extracted_thoughts if extracted_thoughts else current_thoughts
-
-            # Only display thoughts if they haven't been shown already
-            already_displayed = hasattr(
-                current_agent, '_reasoning_logged_for_turn') and current_agent._reasoning_logged_for_turn == turn_count + 1
-            if not already_displayed:
+            # Extract and display thoughts after the action is decided
+            current_thoughts = current_agent.get_memory_from_store(
+                "current_thoughts", [])
+            if current_thoughts:
                 console_logger.info(
                     f"\n💭 AGENT {current_agent.agent_id}'s THOUGHTS:")
-                for i, thought in enumerate(display_thoughts):
+                for i, thought in enumerate(current_thoughts):
                     console_logger.info(f"  • {thought}")
                 # Mark that we've displayed thoughts for this turn
                 current_agent._reasoning_logged_for_turn = turn_count + 1
+        else:
+            # Use the original two-phase approach
+            logger.info("Starting active player analysis phase")
+            console_logger.info("\n--- 🧠 ACTIVE PLAYER ANALYSIS PHASE ---")
 
-        # No discussion summary needed - pass empty string
-        action = current_agent.decide_action(game_state, "")
-        logger.info(f"Action decided: {action}")
+            # Get the active player's reasoning
+            active_player_id = game_state.current_player
+            active_agent = next(
+                agent for agent in agents if agent.agent_id == active_player_id)
+
+            console_logger.info(
+                f"\n👤 PLAYER {active_player_id} (ACTIVE PLAYER) REASONING:")
+
+            # Empty discussion contributions - only the active player will contribute
+            discussion_contributions = []
+
+            # Get the active player's contribution and display raw LLM outputs
+            contribution = active_agent.participate_in_discussion(
+                game_state, discussion_contributions)
+
+            # Display the raw messages from the agent's memory - but only to the log file
+            messages = active_agent.get_memory_from_store("messages", [])
+            if messages:
+                for i, msg in enumerate(messages):
+                    # Only log LLM responses (odd indices) to the file
+                    if hasattr(msg, 'content') and i % 2 == 1:
+                        content = msg.content
+                        # Log to file but not console
+                        logger.debug(f"LLM OUTPUT (STEP {i//2 + 1}):")
+                        logger.debug(content)
+
+                        # If this is the thought generation step (step 2)
+                        # Third response (index 3) is thought generation
+                        if i == 3:
+                            # Extract and log thoughts
+                            thoughts = []
+                            for line in content.strip().split("\n"):
+                                line = line.strip()
+                                if line and (line[0].isdigit() or line[0] in ["•", "-", "*"]):
+                                    # Remove the number or bullet point
+                                    thought = line
+                                    if line[0].isdigit():
+                                        parts = line.split(".", 1)
+                                        if len(parts) > 1:
+                                            thought = parts[1].strip()
+                                    else:
+                                        thought = line[1:].strip()
+
+                                    if thought:
+                                        thoughts.append(thought)
+
+                            # Log the extracted thoughts to file only (debug level)
+                            if thoughts:
+                                logger.debug(
+                                    f"Extracted thoughts for agent {active_agent.agent_id} (Turn {turn_count + 1}):")
+                                for j, thought in enumerate(thoughts):
+                                    logger.debug(f"  Thought {j+1}: {thought}")
+
+                                # Store thoughts in agent memory using the proper method
+                                active_agent.store_memory(
+                                    "extracted_thoughts", thoughts)
+
+                                # Display reasoning chain immediately after extraction
+                                console_logger.info("\n🧠 REASONING CHAIN FOR AGENT {0} (Turn {1}):".format(
+                                    active_agent.agent_id, turn_count + 1))
+                                for j, thought in enumerate(thoughts):
+                                    console_logger.info(
+                                        f"  Thought {j+1}: {thought}")
+
+                                # Mark that we've displayed reasoning for this turn
+                                active_agent._reasoning_logged_for_turn = turn_count + 1
+                            else:
+                                logger.debug(
+                                    f"No thoughts could be extracted from the LLM output for agent {active_agent.agent_id}")
+                                console_logger.info(
+                                    "\n⚠️ No thoughts could be extracted from the LLM output")
+
+                        # ADDED: Display the raw LLM output for the action proposal step
+                        # Fifth response (index 5) is action proposal
+                        elif i == 5:
+                            console_logger.info("\n🔍 ACTION REASONING:")
+                            # Extract and display a condensed version of the action reasoning
+                            action_lines = []
+                            for line in content.strip().split("\n"):
+                                line = line.strip()
+                                if line and "I will" in line:
+                                    action_lines.append(line)
+                                elif line and "because" in line.lower() and len(line) < 200:
+                                    action_lines.append(line)
+
+                            if action_lines:
+                                for line in action_lines:
+                                    console_logger.info(f"  • {line}")
+                            else:
+                                # If no specific action lines found, show the first few lines
+                                content_lines = content.strip().split("\n")
+                                # Only show first 2 lines
+                                for line in content_lines[:2]:
+                                    if line.strip():
+                                        console_logger.info(
+                                            f"  • {line.strip()}")
+                            # No need for separator line
+
+                    # Also log input prompts to file only
+                    elif hasattr(msg, 'content') and i % 2 == 0:
+                        content = msg.content
+                        # Log to file but not console
+                        logger.debug(f"INPUT PROMPT (STEP {i//2 + 1}):")
+                        logger.debug(content)
+
+            # Add the contribution to the discussion history
+            discussion_contributions.append({
+                "player_id": active_player_id,
+                "content": contribution,
+                "is_active_player": True
+            })
+
+            # Modified: Skip other players' contributions and discussion summary
+            # Directly decide on an action based on the active player's analysis
+            logger.info("Starting action phase")
+            console_logger.info("\n--- 🎬 Action Phase ---")
+
+            # Get the current thoughts from the agent's memory
+            current_thoughts = current_agent.get_memory_from_store(
+                "current_thoughts", [])
+            if current_thoughts:
+                # Get extracted thoughts from earlier
+                extracted_thoughts = current_agent.get_memory_from_store(
+                    "extracted_thoughts", [])
+
+                # Use extracted_thoughts if available, otherwise use current_thoughts
+                display_thoughts = extracted_thoughts if extracted_thoughts else current_thoughts
+
+                # Only display thoughts if they haven't been shown already
+                already_displayed = hasattr(
+                    current_agent, '_reasoning_logged_for_turn') and current_agent._reasoning_logged_for_turn == turn_count + 1
+                if not already_displayed:
+                    console_logger.info(
+                        f"\n💭 AGENT {current_agent.agent_id}'s THOUGHTS:")
+                    for i, thought in enumerate(display_thoughts):
+                        console_logger.info(f"  • {thought}")
+                    # Mark that we've displayed thoughts for this turn
+                    current_agent._reasoning_logged_for_turn = turn_count + 1
+
+            # No discussion summary needed - pass empty string
+            action = current_agent.decide_action(game_state, "")
+            logger.info(f"Action decided: {action}")
 
         # Log the agent's reasoning chain - but only to the file, not to the console
         log_agent_reasoning(current_agent, turn_count +
                             1, print_to_console=False)
-
-        # Log the agent's thoughts to file only
-        current_thoughts = current_agent.get_memory_from_store(
-            "current_thoughts", [])
-        if current_thoughts:
-            # Only log to file - never to console here
-            logger.info(
-                f"Agent {current_agent.agent_id}'s thoughts for turn {turn_count + 1}:")
-            for i, thought in enumerate(current_thoughts):
-                logger.info(f"  Thought {i+1}: {thought}")
-
-            # Completely skip console output - it should already have been handled earlier
-        else:
-            logger.warning(
-                f"No thoughts found for agent {current_agent.agent_id} in turn {turn_count + 1}")
 
         # Display the formatted action with better highlighting
         action_display = game_logger.format_action_for_display(
