@@ -167,10 +167,10 @@ def log_action_history(agents, turn_count, print_to_console=True):
         console_logger.info(f"\n📜 ACTION HISTORY (Turn {turn_count}):")
         console_logger.info("=" * 80)
 
-    # Collect all actions from all agents
-    all_actions = []
-    # Track action IDs to prevent duplicates
-    seen_actions = set()
+    # Collect all actions from all agents, organized by turn
+    all_actions_by_turn = {}
+    # Track action IDs to prevent duplicates within each turn
+    seen_actions_by_turn = {}
 
     for agent in agents:
         if hasattr(agent, 'agent_memory'):
@@ -178,35 +178,140 @@ def log_action_history(agents, turn_count, print_to_console=True):
             action_results = agent.agent_memory.action_results
 
             for action_result in action_results:
-                # Create a unique identifier for this action
-                action_str = str(action_result.action)
-                if action_str not in seen_actions:
-                    seen_actions.add(action_str)
-                    all_actions.append({
-                        "agent_id": agent.agent_id,
-                        "agent_name": agent.name,
-                        "action": action_result.action,
-                        "result": action_result.result,
-                        # Use the current turn count instead of trying to access action_result.turn
-                        "turn": turn_count
-                    })
+                # Get the turn number for this action
+                action_turn = action_result.get_turn() if hasattr(
+                    action_result, 'get_turn') else None
 
-    # Sort actions by turn
-    all_actions.sort(key=lambda x: x.get("turn", 0))
+                # Log the unique ID of this action result for debugging
+                unique_id = action_result.unique_id if hasattr(
+                    action_result, 'unique_id') else 'unknown'
+                logger.debug(
+                    f"Checking action result with ID {unique_id} for turn {action_turn}")
+
+                # Only include actions that were actually executed
+                is_executed = action_result.is_executed if hasattr(
+                    action_result, 'is_executed') else False
+                if not is_executed:
+                    logger.debug(
+                        f"Skipping action result with ID {unique_id} as it was not executed")
+                    continue
+
+                # If we can't determine the turn, use timestamp to estimate
+                # This is a fallback mechanism
+                if action_turn is None and hasattr(action_result, 'timestamp'):
+                    # If the action was recorded in the last minute, consider it part of the current turn
+                    action_time = datetime.datetime.fromisoformat(
+                        action_result.timestamp)
+                    current_time = datetime.datetime.now()
+                    time_diff = (current_time - action_time).total_seconds()
+                    # If action was in the last minute, consider it part of the current turn
+                    # Otherwise, we can't determine which turn it belongs to
+                    if time_diff < 60:
+                        action_turn = turn_count
+                    else:
+                        # Skip actions we can't assign to a turn
+                        continue
+
+                # Skip actions we still can't assign to a turn
+                if action_turn is None:
+                    continue
+
+                # Initialize data structures for this turn if needed
+                if action_turn not in all_actions_by_turn:
+                    all_actions_by_turn[action_turn] = []
+                    seen_actions_by_turn[action_turn] = set()
+
+                # Create a more robust unique identifier for this action
+                action = action_result.action
+                action_type = action.get("type", "unknown")
+
+                # Create a unique key that includes all relevant information
+                unique_key_parts = [
+                    f"agent:{agent.agent_id}",
+                    f"type:{action_type}"
+                ]
+
+                # Add specific details based on action type
+                if action_type == "play_card":
+                    unique_key_parts.append(
+                        f"card_index:{action.get('card_index', 'unknown')}")
+                elif action_type == "give_clue":
+                    unique_key_parts.append(
+                        f"target:{action.get('target_id', 'unknown')}")
+                    clue = action.get("clue", {})
+                    unique_key_parts.append(
+                        f"clue_type:{clue.get('type', 'unknown')}")
+                    unique_key_parts.append(
+                        f"clue_value:{clue.get('value', 'unknown')}")
+                elif action_type == "discard":
+                    unique_key_parts.append(
+                        f"card_index:{action.get('card_index', 'unknown')}")
+
+                # Create the final unique key
+                unique_key = "|".join(unique_key_parts)
+
+                # Only add the action if we haven't seen this exact action in this turn before
+                if unique_key not in seen_actions_by_turn[action_turn]:
+                    # Also check if this is a real executed action rather than a thought or proposal
+                    # Real actions should have a result indicating success
+                    is_real_action = False
+
+                    # Check the result to determine if this was an actually executed action
+                    result = action_result.result
+                    if isinstance(result, bool) and result:
+                        is_real_action = True
+                    elif isinstance(result, dict) and result.get("success", False):
+                        is_real_action = True
+                    elif isinstance(result, dict) and "card" in result:
+                        is_real_action = True
+
+                    if is_real_action:
+                        seen_actions_by_turn[action_turn].add(unique_key)
+                        all_actions_by_turn[action_turn].append({
+                            "agent_id": agent.agent_id,
+                            "agent_name": agent.name,
+                            "action": action_result.action,
+                            "result": action_result.result,
+                            "turn": action_turn
+                        })
+
+    # Flatten the actions into a single list, sorted by turn and then by agent ID
+    all_actions = []
+    for turn in sorted(all_actions_by_turn.keys()):
+        # Sort actions within each turn by agent ID
+        turn_actions = sorted(
+            all_actions_by_turn[turn], key=lambda x: x.get("agent_id", 0))
+        all_actions.extend(turn_actions)
 
     # Log each action
     if all_actions:
         # Use a set to track printed actions to avoid duplicates
         printed_actions = set()
+        displayed_count = 0
+
+        # Display a header for each turn
+        current_turn_displayed = None
 
         for i, action_data in enumerate(all_actions):
+            action_turn = action_data.get("turn")
+
+            # If we're starting a new turn in the display, show a header
+            if action_turn != current_turn_displayed:
+                current_turn_displayed = action_turn
+                if print_to_console:
+                    console_logger.info(
+                        f"\n--- Turn {action_turn} Actions ---")
+                # Reset the duplicate tracking for each turn
+                printed_actions = set()
+                displayed_count = 0
+
             agent_id = action_data.get("agent_id", "?")
             agent_name = action_data.get("agent_name", "?")
             action = action_data.get("action", {})
             action_type = action.get("type", "unknown")
 
             # Format the action for display
-            log_message = f"Action {i+1}: {agent_name} (Player {agent_id}) - "
+            log_message = f"Action {displayed_count+1}: {agent_name} (Player {agent_id}) - "
 
             if action_type == "play_card":
                 card_index = action.get("card_index", "?")
@@ -229,14 +334,21 @@ def log_action_history(agents, turn_count, print_to_console=True):
             else:
                 log_message += f"Unknown action: {action_type}"
 
+            # After formatting, check if we've already displayed this exact message
+            if log_message in printed_actions:
+                logger.debug(
+                    f"Skipping duplicate action display: {log_message}")
+                continue
+
+            # Add to printed set and increment the counter
+            printed_actions.add(log_message)
+            displayed_count += 1
+
             logger.info(log_message)
 
             if print_to_console:
-                # Use a different format for console to avoid duplication
-                # Only print if this exact message hasn't been printed before
-                if log_message not in printed_actions:
-                    console_logger.info(log_message)
-                    printed_actions.add(log_message)
+                # Only print once since we already deduplicated
+                console_logger.info(log_message)
     else:
         logger.info("No actions recorded yet")
         if print_to_console:
@@ -531,8 +643,19 @@ def main():
                 color_emoji = COLOR_EMOJI.get(color_name, "")
                 console_logger.info(f"Card: {color_emoji}{card.number}")
 
-        # Notify the agent of the result
+        # Notify the agent of the result (add debug logging)
+        logger.debug(
+            f"Calling notify_action_result for agent {current_agent.agent_id}, turn {turn_count + 1}, action type: {action.get('type', 'unknown')}")
         current_agent.notify_action_result(action, result)
+
+        # Debug logging to check for duplicate action results
+        if hasattr(current_agent, 'agent_memory') and hasattr(current_agent.agent_memory, 'action_results'):
+            action_results = current_agent.agent_memory.action_results
+            logger.debug(
+                f"Agent {current_agent.agent_id} now has {len(action_results)} action results in memory:")
+            for i, ar in enumerate(action_results):
+                logger.debug(
+                    f"  Action result {i+1}: {ar.action} (Turn: {ar.get_turn() if hasattr(ar, 'get_turn') else 'unknown'})")
 
         # Create a detailed action history entry for logging
         action_history_entry = {
@@ -544,11 +667,13 @@ def main():
             "result": result
         }
 
-        # Store the action history in each agent's memory
-        for agent in agents:
-            agent.agent_memory.store_memory(
-                "action_history", action_history_entry)
+        # Store the action history only in the current agent's memory (the one who took the action)
+        # This prevents duplicate entries in the action history
+        current_agent.agent_memory.store_memory(
+            "action_history", action_history_entry)
 
+        # Update game summary for each agent (all agents should know what happened)
+        for agent in agents:
             # Update game summary for each agent
             game_summary = f"Turn {turn_count + 1}: Player {current_player_id} ({current_agent.name}) - "
 

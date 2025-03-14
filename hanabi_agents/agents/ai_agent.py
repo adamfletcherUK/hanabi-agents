@@ -535,10 +535,58 @@ class AIAgent(Agent):
         result_dict = result if isinstance(result, dict) else {
             "success": result}
 
-        # Store the action result in structured memory
-        self.agent_memory.add_action_result(action, result_dict)
+        # Get the current turn count if available
+        turn_count = self.current_game_state.turn_count if self.current_game_state else 0
+
+        # Check if this action result already exists in memory for this turn
+        # to prevent duplicate entries
+        action_type = action.get("type", "unknown")
+        is_duplicate = False
+
+        # First, determine if this is an action that was actually executed successfully
+        # (as opposed to just being considered in the thinking phase)
+        is_executed_action = False
+        if isinstance(result, bool) and result:
+            is_executed_action = True
+        elif isinstance(result, dict) and result.get("success", True):
+            is_executed_action = True
+        elif isinstance(result, dict) and "card" in result:
+            is_executed_action = True
+
+        # Only proceed with duplicate checking for executed actions
+        if is_executed_action:
+            # Remove any existing action results for this turn with the same action type
+            # This is a direct fix to prevent duplicates
+            self.agent_memory.action_results = [
+                ar for ar in self.agent_memory.action_results
+                if not (ar.get_turn() == turn_count and ar.action.get("type") == action_type)
+            ]
+
+            # No need for detailed duplicate checking since we removed all potential duplicates
+            is_duplicate = False
+
+        # Only store the action result if it's not a duplicate and it was actually executed
+        if not is_duplicate and is_executed_action:
+            # Create the result record with the executed flag set
+            result_record = ActionResult(
+                action=action,
+                result=result_dict,
+                timestamp=datetime.datetime.now().isoformat(),
+                turn=turn_count,
+                is_executed=True
+            )
+            # Add to action_results list
+            self.agent_memory.action_results.append(result_record)
+            logger.info(
+                f"Added executed action result with ID {result_record.unique_id} to memory for turn {turn_count}")
+        elif not is_executed_action:
+            logger.debug(
+                f"Not adding action to memory since it wasn't executed (it was only considered)")
+        elif is_duplicate:
+            logger.debug(f"Not adding duplicate action to memory")
 
         # Store the action and result in the memory store for immediate access
+        # (we always do this regardless of duplication for consistent access)
         self.store_memory("last_action", action)
         self.store_memory("last_result", result_dict)
 
@@ -546,7 +594,7 @@ class AIAgent(Agent):
         standardized_action = {
             "type": action.get("type", "unknown"),
             "timestamp": datetime.datetime.now().isoformat(),
-            "turn": self.current_game_state.turn_count if self.current_game_state else 0,
+            "turn": turn_count,
         }
 
         # Add specific details based on action type
@@ -558,9 +606,10 @@ class AIAgent(Agent):
         elif action.get("type") == "discard":
             standardized_action["card_index"] = action.get("card_index")
 
-        # Store the standardized action
-        self.agent_memory.store_memory(
-            "standardized_actions", standardized_action)
+        # Store the standardized action (only if not a duplicate)
+        if not is_duplicate:
+            self.agent_memory.store_memory(
+                "standardized_actions", standardized_action)
 
         # Log any errors for learning
         if isinstance(result, dict) and not result.get("success", True):
@@ -594,7 +643,7 @@ class AIAgent(Agent):
                 action=action,
                 error=error_message,
                 error_reason=error_reason,
-                turn=self.current_game_state.turn_count if self.current_game_state else 0
+                turn=turn_count
             )
 
         elif isinstance(result, bool) and not result:
@@ -605,7 +654,7 @@ class AIAgent(Agent):
                 action=action,
                 error="Unknown error",
                 error_reason="unknown_error",
-                turn=self.current_game_state.turn_count if self.current_game_state else 0
+                turn=turn_count
             )
 
         # Save the current state to memory store

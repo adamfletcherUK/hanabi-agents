@@ -3,6 +3,7 @@ from typing_extensions import TypedDict
 from ...game.state import GameState
 from pydantic import BaseModel, Field
 import datetime
+import uuid
 
 
 class ActionError(BaseModel):
@@ -21,6 +22,14 @@ class ActionResult(BaseModel):
     result: Dict[str, Any] = Field(default_factory=dict)
     timestamp: str = Field(
         default_factory=lambda: datetime.datetime.now().isoformat())
+    turn: int = 0
+    unique_id: str = Field(
+        default_factory=lambda: str(uuid.uuid4())[:8])
+    is_executed: bool = False
+
+    def get_turn(self) -> int:
+        """Get the turn number for this action result"""
+        return self.turn
 
 
 class AgentStateDict(TypedDict, total=False):
@@ -105,12 +114,20 @@ class AgentMemory(BaseModel):
         )
         self.action_errors.append(error_record)
 
-    def add_action_result(self, action: Dict[str, Any], result: Dict[str, Any]) -> None:
-        """Add an action result to memory"""
+    def add_action_result(self, action: Dict[str, Any], result: Dict[str, Any], turn: int = 0) -> None:
+        """
+        Add an action result to memory
+
+        Args:
+            action: The action that was taken
+            result: The result of the action
+            turn: The turn number when the action was taken
+        """
         result_record = ActionResult(
             action=action,
             result=result,
-            timestamp=datetime.datetime.now().isoformat()
+            timestamp=datetime.datetime.now().isoformat(),
+            turn=turn
         )
         self.action_results.append(result_record)
 
