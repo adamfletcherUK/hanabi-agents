@@ -8,10 +8,10 @@ class PlayCardInput(BaseModel):
     """Schema for playing a card from the agent's hand."""
     card_index: int = Field(
         description="The position of the card to play (1-indexed: first card = 1, second card = 2, etc.)",
-        # greater than or equal to 0 (validation will accept 0 though we expect 1-indexed input)
-        ge=0,
-        # less than or equal to 4 (validation will accept 0-4 though we expect 1-5)
-        le=4
+        # 1-indexed input should be at least 1
+        ge=1,
+        # 1-indexed input should be at most 5 (for a standard hand size of 5 cards)
+        le=5
     )
 
 
